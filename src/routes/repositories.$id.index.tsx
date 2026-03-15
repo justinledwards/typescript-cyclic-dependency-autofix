@@ -34,7 +34,7 @@ function RepositoryFindings() {
 
       <div className="mb-6 flex gap-4 items-center">
         <label className="font-medium text-gray-700">Filter Status:</label>
-        <select 
+        <select
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           className="border border-gray-300 rounded-md p-2 bg-white"

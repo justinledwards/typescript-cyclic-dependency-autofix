@@ -22,9 +22,9 @@ function CycleDetail() {
   return (
     <div className="p-8 max-w-6xl mx-auto">
       <div className="mb-6">
-        <Link 
-          to="/repositories/$id" 
-          params={{ id }} 
+        <Link
+          to="/repositories/$id"
+          params={{ id }}
           className="text-blue-600 hover:underline mb-4 inline-block"
         >
           &larr; Back to Findings

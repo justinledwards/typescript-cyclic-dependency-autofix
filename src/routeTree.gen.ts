@@ -29,11 +29,12 @@ const RepositoriesIdIndexRoute = RepositoriesIdIndexRouteImport.update({
   path: '/repositories/$id/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const RepositoriesIdCyclesCycleIdRoute = RepositoriesIdCyclesCycleIdRouteImport.update({
-  id: '/repositories/$id/cycles/$cycleId',
-  path: '/repositories/$id/cycles/$cycleId',
-  getParentRoute: () => rootRouteImport,
-} as any)
+const RepositoriesIdCyclesCycleIdRoute =
+  RepositoriesIdCyclesCycleIdRouteImport.update({
+    id: '/repositories/$id/cycles/$cycleId',
+    path: '/repositories/$id/cycles/$cycleId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -56,10 +57,19 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/about' | '/repositories/$id/' | '/repositories/$id/cycles/$cycleId'
+  fullPaths:
+    | '/'
+    | '/about'
+    | '/repositories/$id/'
+    | '/repositories/$id/cycles/$cycleId'
   fileRoutesByTo: FileRoutesByTo
   to: '/' | '/about' | '/repositories/$id' | '/repositories/$id/cycles/$cycleId'
-  id: '__root__' | '/' | '/about' | '/repositories/$id/' | '/repositories/$id/cycles/$cycleId'
+  id:
+    | '__root__'
+    | '/'
+    | '/about'
+    | '/repositories/$id/'
+    | '/repositories/$id/cycles/$cycleId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -87,7 +97,7 @@ declare module '@tanstack/react-router' {
     }
     '/repositories/$id/': {
       id: '/repositories/$id/'
-      path: '/repositories/$id/'
+      path: '/repositories/$id'
       fullPath: '/repositories/$id/'
       preLoaderRoute: typeof RepositoriesIdIndexRouteImport
       parentRoute: typeof rootRouteImport
@@ -103,10 +113,10 @@ declare module '@tanstack/react-router' {
 }
 
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute,
-  AboutRoute,
-  RepositoriesIdIndexRoute,
-  RepositoriesIdCyclesCycleIdRoute,
+  IndexRoute: IndexRoute,
+  AboutRoute: AboutRoute,
+  RepositoriesIdIndexRoute: RepositoriesIdIndexRoute,
+  RepositoriesIdCyclesCycleIdRoute: RepositoriesIdCyclesCycleIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

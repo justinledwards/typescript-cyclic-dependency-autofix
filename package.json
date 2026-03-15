@@ -9,7 +9,11 @@
     "dev": "vite dev --port 3000",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "scan": "tsx cli/index.ts scan",
+    "scan:all": "tsx cli/index.ts scan:all",
+    "retry:failed": "tsx cli/index.ts retry:failed",
+    "export:patches": "tsx cli/index.ts export:patches"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.18",
@@ -20,6 +24,7 @@
     "@tanstack/react-start": "latest",
     "@tanstack/router-plugin": "^1.132.0",
     "better-sqlite3": "^12.8.0",
+    "commander": "^14.0.3",
     "lucide-react": "^0.545.0",
     "nitro": "npm:nitro-nightly@latest",
     "react": "^19.2.0",
@@ -37,6 +42,7 @@
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.1.4",
     "jsdom": "^28.1.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.7.2",
     "vite": "^7.3.1",
     "vite-tsconfig-paths": "^5.1.4",

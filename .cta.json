@@ -1,9 +1,9 @@
 {
-  "projectName": "app",
+  "projectName": "typescript-cyclic-dependency-autofix",
   "mode": "file-router",
   "typescript": true,
   "tailwind": true,
-  "packageManager": "npm",
+  "packageManager": "pnpm",
   "git": true,
   "install": true,
   "addOnOptions": {},
@@ -12,7 +12,5 @@
   "routerOnly": false,
   "version": 1,
   "framework": "react",
-  "chosenAddOns": [
-    "nitro"
-  ]
+  "chosenAddOns": ["nitro"]
 }

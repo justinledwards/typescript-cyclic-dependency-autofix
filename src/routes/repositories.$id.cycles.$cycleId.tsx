@@ -1,32 +1,30 @@
-import { createFileRoute, Link } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
-import { fetchCycleDetail } from '../lib/api'
+import { useQuery } from '@tanstack/react-query';
+import { createFileRoute, Link } from '@tanstack/react-router';
+import { fetchCycleDetail } from '../lib/api';
 
-export const Route = createFileRoute(
-  '/repositories/$id/cycles/$cycleId',
-)({
+export const Route = createFileRoute('/repositories/$id/cycles/$cycleId')({
   component: CycleDetail,
-})
+});
 
 function CycleDetail() {
-  const { id, cycleId } = Route.useParams()
+  const { id, cycleId } = Route.useParams();
 
-  const { data: cycle, isLoading, error } = useQuery({
+  const {
+    data: cycle,
+    isLoading,
+    error,
+  } = useQuery({
     queryKey: ['cycle', id, cycleId],
     queryFn: () => fetchCycleDetail(id, cycleId),
-  })
+  });
 
-  if (isLoading) return <div className="p-8">Loading cycle details...</div>
-  if (error) return <div className="p-8 text-red-600">Error loading cycle details</div>
+  if (isLoading) return <div className="p-8">Loading cycle details...</div>;
+  if (error) return <div className="p-8 text-red-600">Error loading cycle details</div>;
 
   return (
     <div className="p-8 max-w-6xl mx-auto">
       <div className="mb-6">
-        <Link
-          to="/repositories/$id"
-          params={{ id }}
-          className="text-blue-600 hover:underline mb-4 inline-block"
-        >
+        <Link to="/repositories/$id" params={{ id }} className="text-blue-600 hover:underline mb-4 inline-block">
           &larr; Back to Findings
         </Link>
         <h1 className="text-3xl font-bold">Cycle Review</h1>
@@ -70,15 +68,21 @@ function CycleDetail() {
           </div>
 
           <div className="flex gap-4 justify-end">
-             <button className="px-6 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors">
-               Reject
-             </button>
-             <button className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors">
-               Approve
-             </button>
+            <button
+              type="button"
+              className="px-6 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
+            >
+              Reject
+            </button>
+            <button
+              type="button"
+              className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+            >
+              Approve
+            </button>
           </div>
         </div>
       )}
     </div>
-  )
+  );
 }

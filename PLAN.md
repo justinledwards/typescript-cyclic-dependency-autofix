@@ -18,102 +18,52 @@ The operating model is:
 
 ---
 
-## Libraries and tools to attempt first
+## Tech stack decisions
+
+### Runtime and tooling
+- **Node.js 25** — Latest LTS runtime, pinned via `mise.toml`
+- **pnpm 10** — Package manager, pinned via `mise.toml`
+- **TypeScript** — Strict mode throughout
+
+### Frontend
+- **TanStack Start** — Full-stack React framework with SSR, built on Vite 7
+- **TanStack Router** — File-based routing in `/src/routes`
+- **TanStack Query (React Query)** — Data fetching and cache management for the review UI
+- **React 19** — UI library
+- **Tailwind CSS 4** — Utility-first styling via `@tailwindcss/vite` plugin
+- **Lucide React** — Icon library
+
+### Backend API
+- **Fastify 5** — Lightweight API server on port 3001, serves `/api/*` endpoints
+- **@fastify/cors** — CORS support for frontend dev server communication
+
+### Database
+- **SQLite** — Simple, embedded database for findings, repos, patch metadata, and review state
+- **better-sqlite3** — Synchronous SQLite access layer for Node.js
 
 ### Core analysis and fix pipeline
-
-- **dependency-cruiser**
-  - Primary cycle detector and dependency graph source
-  - Use structured output, not just terminal text
-  - Best fit for graph-first detection
-
-- **TypeScript Compiler API**
-  - Primary semantic analysis layer
-  - Use for symbol resolution, type-only import checks, declaration lookup, reference analysis, and free variable analysis
-  - Best foundation for deciding whether a candidate extraction looks safe
-
-- **ts-morph**
-  - Convenience layer over the TypeScript Compiler API
-  - Good for easier AST navigation and source file manipulation
-  - Use it if development speed matters more than using raw compiler APIs everywhere
-
-- **jscodeshift**
-  - Primary codemod rewrite engine
-  - Good for moving declarations, rewriting imports, and generating clean file patches across JS, JSX, TS, and TSX
-
-- **recast**
-  - Formatting-preserving printer used well with jscodeshift
-  - Helps avoid ugly diffs and unnecessary churn
+- **dependency-cruiser** — Primary cycle detector and dependency graph source; uses structured JSON output
+- **ts-morph** — Convenience layer over the TypeScript Compiler API for AST navigation and semantic analysis
+- **jscodeshift** — Primary codemod rewrite engine for moving declarations and rewriting imports
+- **recast** — Formatting-preserving printer used with jscodeshift to minimize diff noise
 
 ### Validation and developer workflow
+- **TypeScript (`tsc`)** — Typecheck validation after rewrite via `tsc --noEmit`
+- **eslint** — Optional post-fix lint validation (planned)
+- **prettier** — Optional post-fix formatting normalization (planned)
+- **simple-git** — Git operations for cloning, worktree isolation, and clean diff creation
 
-- **TypeScript (`tsc`)**
-  - Typecheck validation after rewrite
+### UI enhancements (planned)
+- **Monaco Editor** or **CodeMirror** — Side-by-side diff or patch inspection in the review UI
 
-- **eslint**
-  - Optional post-fix lint validation
+### GitHub integration (later in MVP if needed)
+- **octokit** — Use later when creating PRs through GitHub API becomes worth it
 
-- **prettier**
-  - Optional post-fix formatting normalization
-
-- **git**
-  - Use for patch generation, worktree isolation, and clean diff creation
-
-### Server-side app and storage
-
-- **Node.js**
-  - Main runtime
-
-- **SQLite**
-  - Easiest MVP database for findings, repos, patch metadata, validation results, and review state
-
-- **better-sqlite3**
-  - Good simple SQLite access layer for Node
-
-- **Fastify** or **Express**
-  - Lightweight API backend for the review UI
-  - Prefer Fastify if you want structure and speed, Express if you want familiarity
-
-### UI
-
-- **React**
-  - Review interface
-
-- **Vite**
-  - Simple frontend build setup
-
-- **TanStack Query**
-  - Useful for findings list, patch detail, and review actions
-
-- **Monaco Editor** or **CodeMirror**
-  - Side-by-side diff or patch inspection
-
-### GitHub integration, later in MVP if needed
-
-- **simple-git**
-  - Good for local repo automation
-
-- **octokit**
-  - Use later when creating PRs through GitHub API becomes worth it
-
-### Other candidates if the first choice becomes a problem
-
-- **Madge**
-  - Alternate dependency graph tool
-  - Simpler in some cases, but less attractive than dependency-cruiser for this project
-
-- **Babel parser / @babel/traverse**
-  - Alternate AST stack for JS-first parsing
-  - Useful fallback if jscodeshift or ts-morph has trouble on some repos
-
-- **tsquery**
-  - Helpful if query-style AST matching becomes useful
-
-- **PostgreSQL**
-  - Upgrade path if SQLite becomes too limiting for multi-repo history and UI filtering
-
-- **Next.js**
-  - Alternate choice if you want one full-stack app instead of separate API plus UI
+### Alternate candidates if primary tools have issues
+- **Madge** — Alternate dependency graph tool, simpler but less configurable than dependency-cruiser
+- **Babel parser / @babel/traverse** — Alternate AST stack for JS-first parsing, fallback if jscodeshift or ts-morph struggles on some repos
+- **tsquery** — Helpful if query-style AST matching becomes useful
+- **PostgreSQL** — Upgrade path if SQLite becomes too limiting for multi-repo history and UI filtering
 
 ---
 
@@ -170,7 +120,7 @@ The first release should only auto-fix cycles that match all or nearly all of th
 
 ### 3. AST and semantic analysis layer
 
-- [ ] Build an analysis service around the TypeScript Compiler API or ts-morph.
+- [ ] Build an analysis service around ts-morph.
 - [ ] Parse both files participating in a two-file cycle.
 - [ ] Identify import edges crossing between the two files.
 - [ ] Resolve which imported symbols are actually responsible for the cross-file dependency.
@@ -227,35 +177,44 @@ The first release should only auto-fix cycles that match all or nearly all of th
 
 ### 9. Database schema
 
-- [ ] Create a `repositories` table.
-- [ ] Create a `scans` table linked to repositories and commit SHAs.
-- [ ] Create a `cycles` table for normalized cycle issues.
-- [ ] Create a `fix_candidates` table for classification output and confidence.
-- [ ] Create a `patches` table for generated patch content and validation status.
-- [ ] Create a `review_decisions` table for human triage state.
-- [ ] Add indexes for repo, commit, status, confidence, and review state.
+- [x] Create a `repositories` table.
+- [x] Create a `scans` table linked to repositories and commit SHAs.
+- [x] Create a `cycles` table for normalized cycle issues.
+- [x] Create a `fix_candidates` table for classification output and confidence.
+- [x] Create a `patches` table for generated patch content and validation status.
+- [x] Create a `review_decisions` table for human triage state.
+- [x] Add indexes for repo, commit, status, confidence, and review state.
 
 ### 10. Review UI
 
-- [ ] Build a repositories list view.
-- [ ] Build a findings queue filtered by status and confidence.
-- [ ] Show normalized cycle path and participating files.
-- [ ] Show fix classification, confidence, and reasons.
-- [ ] Show unified diff patch text.
+- [x] Build a repositories list view.
+- [x] Build a findings queue filtered by status and confidence.
+- [x] Show normalized cycle path and participating files.
+- [x] Show fix classification, confidence, and reasons.
+- [x] Show unified diff patch text.
 - [ ] Show before and after dependency summary.
-- [ ] Add review actions such as approve, reject, ignore, and revisit later.
+- [x] Add review actions such as approve, reject, ignore, and revisit later.
 - [ ] Add basic search and filters by repo, cycle size, classification, and validation status.
 
 ### 11. CLI and operations
 
-- [ ] Build a CLI command to scan one repo.
-- [ ] Build a CLI command to scan all tracked repos.
-- [ ] Build a CLI command to retry failed candidates.
-- [ ] Build a CLI command to export approved patches.
+- [x] Build a CLI command to scan one repo.
+- [x] Build a CLI command to scan all tracked repos.
+- [x] Build a CLI command to retry failed candidates.
+- [x] Build a CLI command to export approved patches.
 - [ ] Add logging for clone, dep analysis, classification, rewrite, and validation stages.
 - [ ] Add concurrency limits so a cheap server does not thrash itself.
 
-### 12. Metrics and trust-building
+### 12. Backend API
+
+- [x] Create Fastify server on port 3001.
+- [x] Implement REST endpoints for repositories CRUD.
+- [x] Implement findings and cycle detail endpoints.
+- [x] Implement review decision endpoint.
+- [ ] Add authentication or API key protection.
+- [ ] Add request validation schemas.
+
+### 13. Metrics and trust-building
 
 - [ ] Track total repos scanned.
 - [ ] Track total cycles found.

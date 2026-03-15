@@ -1,13 +1,39 @@
+# Node
 node_modules
-.DS_Store
 dist
 dist-ssr
-*.local
-.env
-.nitro
-.tanstack
-.wrangler
+
+# Build output
 .output
 .vinxi
 __unconfig*
-todos.json
+
+# Database
+*.db
+database.sqlite*
+*.sqlite-shm
+*.sqlite-wal
+*.db-shm
+*.db-wal
+db/data.db
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+
+# OS
+.DS_Store
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Worktrees (isolated clones for safe patch generation)
+worktrees/
+
+# Logs
+*.log
+
+# Testing
+coverage/

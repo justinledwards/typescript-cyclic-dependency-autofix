@@ -18,6 +18,7 @@
   "dependencies": {
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/react-devtools": "latest",
+    "@tanstack/react-query": "^5.90.21",
     "@tanstack/react-router": "latest",
     "@tanstack/react-router-devtools": "latest",
     "@tanstack/react-router-ssr-query": "latest",
@@ -25,11 +26,13 @@
     "@tanstack/router-plugin": "^1.132.0",
     "better-sqlite3": "^12.8.0",
     "commander": "^14.0.3",
+    "dependency-cruiser": "^17.3.9",
     "lucide-react": "^0.545.0",
     "nitro": "npm:nitro-nightly@latest",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "tailwindcss": "^4.1.18"
+    "tailwindcss": "^4.1.18",
+    "ts-morph": "^27.0.2"
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.16",

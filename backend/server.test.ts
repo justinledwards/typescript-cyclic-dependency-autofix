@@ -323,7 +323,7 @@ describe('backend API', () => {
         scan_id: scanInfo.lastInsertRowid,
         normalized_path: 'p->q',
         participating_files: JSON.stringify(['p.ts', 'q.ts']),
-        raw_payload: null,
+        raw_payload: JSON.stringify({ violations: [] }),
       });
       const fcInfo = stmts.addFixCandidate.run({
         cycle_id: cycleInfo.lastInsertRowid,

@@ -206,11 +206,13 @@ export async function buildApp(database?: DatabaseType): Promise<FastifyInstance
     return {
       ...cycle,
       cycle_path: cycle.participating_files ? JSON.parse(cycle.participating_files) : /* v8 ignore next */ [],
+      raw_payload: cycle.raw_payload ? JSON.parse(cycle.raw_payload) : /* v8 ignore next */ null,
       classification: fixCandidate?.classification ?? null,
       confidence: fixCandidate?.confidence ?? null,
       reasons: fixCandidate?.reasons ? JSON.parse(fixCandidate.reasons) : null,
       patch: patch?.patch_text ?? null,
       validation_status: patch?.validation_status ?? null,
+      validation_summary: patch?.validation_summary ?? null,
       review_status: reviewDecision?.decision ?? 'pending',
     };
   });

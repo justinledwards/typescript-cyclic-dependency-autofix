@@ -192,7 +192,7 @@ The first release should only auto-fix cycles that match all or nearly all of th
 - [x] Show normalized cycle path and participating files.
 - [x] Show fix classification, confidence, and reasons.
 - [x] Show unified diff patch text.
-- [ ] Show before and after dependency summary.
+- [x] Show before and after dependency summary.
 - [x] Add review actions such as approve, reject, ignore, and revisit later.
 - [ ] Add basic search and filters by repo, cycle size, classification, and validation status.
 

@@ -21,6 +21,10 @@ function CycleDetail() {
   if (isLoading) return <div className="p-8">Loading cycle details...</div>;
   if (error) return <div className="p-8 text-red-600">Error loading cycle details</div>;
 
+  let statusColor = 'text-gray-800';
+  if (cycle?.validation_status === 'passed') statusColor = 'text-green-600';
+  if (cycle?.validation_status === 'failed') statusColor = 'text-red-600';
+
   return (
     <div className="p-8 max-w-6xl mx-auto">
       <div className="mb-6">
@@ -52,6 +56,36 @@ function CycleDetail() {
                 <div className="bg-gray-50 p-3 rounded-md mt-1 font-mono text-sm break-all">
                   {cycle.cycle_path ? (cycle.cycle_path as string[]).join(' → ') : 'No path available'}
                 </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white p-6 rounded-lg border border-gray-200 shadow-sm">
+            <h2 className="text-xl font-semibold mb-4">Dependency Summary</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">Before (Original Cycle)</h3>
+                {cycle.raw_payload ? (
+                  <pre className="bg-gray-50 p-4 rounded-md overflow-x-auto text-xs font-mono border border-gray-200 h-64 overflow-y-auto">
+                    <code>{JSON.stringify(cycle.raw_payload, null, 2)}</code>
+                  </pre>
+                ) : (
+                  <p className="text-gray-500 italic text-sm">No raw payload available.</p>
+                )}
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">After (Validation)</h3>
+                <div className="mb-2">
+                  <span className="text-gray-500 text-sm">Status: </span>
+                  <span className={`font-medium ${statusColor}`}>{cycle.validation_status || 'Pending / N/A'}</span>
+                </div>
+                {cycle.validation_summary ? (
+                  <pre className="bg-gray-50 p-4 rounded-md overflow-x-auto text-xs font-mono border border-gray-200 h-56 overflow-y-auto w-full">
+                    <code>{cycle.validation_summary}</code>
+                  </pre>
+                ) : (
+                  <p className="text-gray-500 italic text-sm mt-4">No validation summary available.</p>
+                )}
               </div>
             </div>
           </div>

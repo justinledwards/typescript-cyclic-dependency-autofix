@@ -1,76 +1,61 @@
 import { cruise } from 'dependency-cruiser';
 
 export interface CircularDependency {
-    type: 'circular';
-    path: string[];
+  type: 'circular';
+  path: string[];
 }
 
 export async function analyzeRepository(repoPath: string): Promise<CircularDependency[]> {
-    try {
-        const result = await cruise(
-            [repoPath],
-            {
-                exclude: {
-                    path: [
-                        "node_modules",
-                        "dist",
-                        "coverage",
-                        "build",
-                        "\\.git",
-                        "\\.next",
-                        "\\.cache"
-                    ]
-                },
-                includeOnly: {
-                    path: ["\\.(js|jsx|ts|tsx)$"]
-                },
-                validate: true,
-                ruleSet: {
-                    forbidden: [
-                        {
-                            name: "no-circular",
-                            severity: "warn",
-                            from: {},
-                            to: { circular: true }
-                        }
-                    ]
-                }
-            }
-        );
-
-        const circularDependencies: CircularDependency[] = [];
-
-        if (result.output.summary.violations) {
-            for (const violation of result.output.summary.violations) {
-                if (violation.rule.name === 'no-circular') {
-                    const cyclePath = [];
-                    if (violation.type === 'cycle' && (violation as any).cycle) {
-                        cyclePath.push(violation.from);
-                        cyclePath.push(...(violation as any).cycle.map((c: any) => c.name));
-                    } else {
-                        cyclePath.push(violation.from, violation.to);
-                    }
-                    
-                    circularDependencies.push({
-                        type: 'circular',
-                        path: cyclePath
-                    });
-                }
-            }
-        }
-
-        return circularDependencies;
-    } catch (e) {
-        console.error("Error analyzing repository:", e);
-        throw e;
-    }
-}
-
-if (typeof require !== 'undefined' && require.main === module) {
-    const targetPath = process.argv[2] || '.';
-    analyzeRepository(targetPath).then(result => {
-        console.log(JSON.stringify(result, null, 2));
-    }).catch(err => {
-        process.exit(1);
+  try {
+    const result = await cruise([repoPath], {
+      exclude: {
+        path: ['node_modules', 'dist', 'coverage', 'build', String.raw`\.git`, String.raw`\.next`, String.raw`\.cache`],
+      },
+      includeOnly: {
+        path: [String.raw`\.(js|jsx|ts|tsx)$`],
+      },
+      validate: true,
+      ruleSet: {
+        forbidden: [
+          {
+            name: 'no-circular',
+            severity: 'warn',
+            from: {},
+            to: { circular: true },
+          },
+        ],
+      },
     });
+
+    const circularDependencies: CircularDependency[] = [];
+
+    const output = result.output;
+    if (typeof output === 'string') {
+      return circularDependencies;
+    }
+
+    if (output.summary.violations) {
+      for (const violation of output.summary.violations) {
+        if (violation.rule.name === 'no-circular') {
+          const cyclePath: string[] = [];
+          const violationWithCycle = violation as { cycle?: Array<{ name: string }> } & typeof violation;
+          if (violation.type === 'cycle' && violationWithCycle.cycle) {
+            cyclePath.push(violation.from, ...violationWithCycle.cycle.map((c) => c.name));
+          } else {
+            cyclePath.push(violation.from, violation.to);
+          }
+
+          circularDependencies.push({
+            type: 'circular',
+            path: cyclePath,
+          });
+        }
+      }
+    }
+
+    return circularDependencies;
+  } catch (error) {
+    console.error('Error analyzing repository:', error);
+    throw error;
+  }
 }

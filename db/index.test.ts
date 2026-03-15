@@ -322,7 +322,7 @@ describe('db module', () => {
       expect(candidates).toHaveLength(1);
       expect(candidates[0].classification).toBe('autofix_extract_shared');
       expect(candidates[0].confidence).toBe(0.95);
-      expect(JSON.parse(candidates[0].reasons!)).toHaveLength(2);
+      expect(JSON.parse((candidates[0].reasons as string) || '[]')).toHaveLength(2);
     });
 
     it('returns empty array when no candidates exist', () => {

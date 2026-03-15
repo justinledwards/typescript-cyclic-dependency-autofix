@@ -102,21 +102,21 @@ The first release should only auto-fix cycles that match all or nearly all of th
 
 ### 1. Repository runner and workspace management
 
-- [ ] Create a worker that can clone a repo if it does not exist locally.
-- [ ] Add update logic to fetch and hard-reset to the target remote branch head.
-- [ ] Store repo metadata such as owner, name, default branch, last scanned commit, local path, and last scan time.
-- [ ] Use isolated temp worktrees or temp copies for rewrite attempts so patch generation stays clean.
-- [ ] Add per-repo status tracking such as queued, scanning, analyzed, patched, validation failed, ready for review, ignored.
-- [ ] Add retry and failure tracking for clone, install, analyze, rewrite, and validation stages.
+- [x] Create a worker that can clone a repo if it does not exist locally.
+- [x] Add update logic to fetch and hard-reset to the target remote branch head.
+- [x] Store repo metadata such as owner, name, default branch, last scanned commit, local path, and last scan time.
+- [x] Use isolated temp worktrees or temp copies for rewrite attempts so patch generation stays clean.
+- [x] Add per-repo status tracking such as queued, scanning, analyzed, patched, validation failed, ready for review, ignored.
+- [x] Add retry and failure tracking for clone, install, analyze, rewrite, and validation stages.
 
 ### 2. Dependency cycle detection
 
-- [ ] Run dependency-cruiser against JS, JSX, TS, and TSX files only.
-- [ ] Configure output as structured JSON instead of only terminal text.
-- [ ] Parse only circular dependency findings for the MVP pipeline.
+- [x] Run dependency-cruiser against JS, JSX, TS, and TSX files only.
+- [x] Configure output as structured JSON instead of only terminal text.
+- [x] Parse only circular dependency findings for the MVP pipeline.
 - [ ] Normalize cycle order so the same cycle is not stored multiple times due to rotation.
-- [ ] Store normalized cycle path, participating files, and raw depcruise payload in the database.
-- [ ] Add file filtering rules for obvious generated, vendored, dist, coverage, and test output paths.
+- [x] Store normalized cycle path, participating files, and raw depcruise payload in the database.
+- [x] Add file filtering rules for obvious generated, vendored, dist, coverage, and test output paths.
 
 ### 3. AST and semantic analysis layer
 

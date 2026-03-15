@@ -11,6 +11,8 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AboutRouteImport } from './routes/about'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as RepositoriesIdIndexRouteImport } from './routes/repositories.$id.index'
+import { Route as RepositoriesIdCyclesCycleIdRouteImport } from './routes/repositories.$id.cycles.$cycleId'
 
 const AboutRoute = AboutRouteImport.update({
   id: '/about',
@@ -22,31 +24,59 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RepositoriesIdIndexRoute = RepositoriesIdIndexRouteImport.update({
+  id: '/repositories/$id/',
+  path: '/repositories/$id/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RepositoriesIdCyclesCycleIdRoute =
+  RepositoriesIdCyclesCycleIdRouteImport.update({
+    id: '/repositories/$id/cycles/$cycleId',
+    path: '/repositories/$id/cycles/$cycleId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/repositories/$id/': typeof RepositoriesIdIndexRoute
+  '/repositories/$id/cycles/$cycleId': typeof RepositoriesIdCyclesCycleIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/repositories/$id': typeof RepositoriesIdIndexRoute
+  '/repositories/$id/cycles/$cycleId': typeof RepositoriesIdCyclesCycleIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/repositories/$id/': typeof RepositoriesIdIndexRoute
+  '/repositories/$id/cycles/$cycleId': typeof RepositoriesIdCyclesCycleIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/about'
+  fullPaths:
+    | '/'
+    | '/about'
+    | '/repositories/$id/'
+    | '/repositories/$id/cycles/$cycleId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/about'
-  id: '__root__' | '/' | '/about'
+  to: '/' | '/about' | '/repositories/$id' | '/repositories/$id/cycles/$cycleId'
+  id:
+    | '__root__'
+    | '/'
+    | '/about'
+    | '/repositories/$id/'
+    | '/repositories/$id/cycles/$cycleId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AboutRoute: typeof AboutRoute
+  RepositoriesIdIndexRoute: typeof RepositoriesIdIndexRoute
+  RepositoriesIdCyclesCycleIdRoute: typeof RepositoriesIdCyclesCycleIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -65,12 +95,28 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/repositories/$id/': {
+      id: '/repositories/$id/'
+      path: '/repositories/$id'
+      fullPath: '/repositories/$id/'
+      preLoaderRoute: typeof RepositoriesIdIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/repositories/$id/cycles/$cycleId': {
+      id: '/repositories/$id/cycles/$cycleId'
+      path: '/repositories/$id/cycles/$cycleId'
+      fullPath: '/repositories/$id/cycles/$cycleId'
+      preLoaderRoute: typeof RepositoriesIdCyclesCycleIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AboutRoute: AboutRoute,
+  RepositoriesIdIndexRoute: RepositoriesIdIndexRoute,
+  RepositoriesIdCyclesCycleIdRoute: RepositoriesIdCyclesCycleIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

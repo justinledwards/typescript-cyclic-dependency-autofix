@@ -5,6 +5,7 @@ import { analyzeRepository } from '../analyzer/analyzer.js';
 import type { RepositoryDTO } from '../db/index.js';
 import {
   addCycle,
+  addFixCandidate,
   addRepository,
   addScan,
   getRepositoryByOwnerName,
@@ -103,12 +104,21 @@ export async function scanRepository(targetUrlOrOwnerName: string, worktreesDir 
     const cycles = await analyzeRepository(repoPath);
 
     for (const cycle of cycles) {
-      addCycle.run({
+      const cycleInfo = addCycle.run({
         scan_id: scanId,
         normalized_path: cycle.path.join(' -> '),
         participating_files: JSON.stringify(cycle.path),
         raw_payload: JSON.stringify(cycle),
       });
+
+      if (cycle.analysis) {
+        addFixCandidate.run({
+          cycle_id: cycleInfo.lastInsertRowid as number,
+          classification: cycle.analysis.classification,
+          confidence: cycle.analysis.confidence,
+          reasons: JSON.stringify(cycle.analysis.reasons),
+        });
+      }
     }
 
     updateScanStatus.run({ id: scanId, status: 'completed' });

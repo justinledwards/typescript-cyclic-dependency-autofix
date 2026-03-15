@@ -24,6 +24,8 @@ vi.mock('../db/index.js', async () => {
     addCycle: stmts.addCycle,
     getCyclesByScanId: stmts.getCyclesByScanId,
     getScan: stmts.getScan,
+    addFixCandidate: stmts.addFixCandidate,
+    getFixCandidatesByCycleId: stmts.getFixCandidatesByCycleId,
   };
 });
 
@@ -142,5 +144,30 @@ describe('Scanner Worker', () => {
     await scanRepository('bare-name-no-slashes');
     const repo = dbModule.getRepositoryByOwnerName.get('unknown', 'bare-name-no-slashes') as { status: string };
     expect(repo).toBeDefined();
+  });
+
+  it('persists fix candidates when analysis is present', async () => {
+    vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(analyzeRepository).mockResolvedValue([
+      {
+        type: 'circular',
+        path: ['a.ts', 'b.ts', 'a.ts'],
+        analysis: {
+          classification: 'autofix_import_type',
+          confidence: 0.9,
+          reasons: ['mock reason'],
+        },
+      },
+    ]);
+
+    const result = await scanRepository('org/fix');
+
+    const cycles = dbModule.getCyclesByScanId.all(result.scanId) as any[];
+    expect(cycles).toHaveLength(1);
+
+    const candidates = dbModule.getFixCandidatesByCycleId.all(cycles[0].id) as any[];
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].classification).toBe('autofix_import_type');
+    expect(candidates[0].confidence).toBe(0.9);
   });
 });

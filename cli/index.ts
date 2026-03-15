@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { scanRepository } from './scanner.js';
 
 export function createProgram(): Command {
   const program = new Command();
@@ -8,8 +9,15 @@ export function createProgram(): Command {
   program
     .command('scan <repo>')
     .description('Run the dependency analyzer and classifier on a target repository')
-    .action((repo: string) => {
+    .action(async (repo: string) => {
       console.log(`Scanning repository: ${repo}`);
+      try {
+        const result = await scanRepository(repo);
+        console.log(`Scan completed successfully (Scan ID: ${result.scanId}). Found ${result.cyclesFound} cycles.`);
+      } catch (error) {
+        console.error(`Failed to scan repository ${repo}:`, error);
+        process.exit(1);
+      }
     });
 
   program

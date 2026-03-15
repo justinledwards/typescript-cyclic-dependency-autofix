@@ -1,8 +1,10 @@
 import { cruise } from 'dependency-cruiser';
+import { type SemanticAnalysisResult, SemanticAnalyzer } from './semantic.js';
 
 export interface CircularDependency {
   type: 'circular';
   path: string[];
+  analysis?: SemanticAnalysisResult;
 }
 
 export async function analyzeRepository(repoPath: string): Promise<CircularDependency[]> {
@@ -28,6 +30,7 @@ export async function analyzeRepository(repoPath: string): Promise<CircularDepen
     });
 
     const circularDependencies: CircularDependency[] = [];
+    const semanticAnalyzer = new SemanticAnalyzer(repoPath);
 
     const output = result.output;
     if (typeof output === 'string') {
@@ -48,6 +51,7 @@ export async function analyzeRepository(repoPath: string): Promise<CircularDepen
           circularDependencies.push({
             type: 'circular',
             path: cyclePath,
+            analysis: semanticAnalyzer.analyzeCycle(cyclePath),
           });
         }
       }

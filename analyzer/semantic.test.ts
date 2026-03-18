@@ -51,6 +51,13 @@ describe('SemanticAnalyzer', () => {
     const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'a.ts']);
     expect(result.classification).toBe('autofix_import_type');
     expect(result.reasons[0]).toMatch(/converting concrete imports to type-only/);
+    expect(result.plan).toEqual({
+      kind: 'import_type',
+      imports: [
+        { sourceFile: 'a.ts', targetFile: 'b.ts' },
+        { sourceFile: 'b.ts', targetFile: 'a.ts' },
+      ],
+    });
   });
 
   it('detects extract_shared for top-level functions', () => {
@@ -73,6 +80,12 @@ describe('SemanticAnalyzer', () => {
     const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'a.ts']);
     expect(result.classification).toBe('autofix_extract_shared');
     expect(result.reasons[0]).toMatch(/extracting symbols/);
+    expect(result.plan).toEqual({
+      kind: 'extract_shared',
+      sourceFile: 'b.ts',
+      targetFile: 'a.ts',
+      symbols: ['helperB'],
+    });
   });
 
   it('identifies suggest_manual for non-type cycles with unsupported declarations', () => {

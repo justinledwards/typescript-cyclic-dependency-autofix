@@ -3,10 +3,26 @@ import path from 'node:path';
 import { type ImportDeclaration, Node, Project, type SourceFile, SyntaxKind } from 'ts-morph';
 import type { Classification } from '../db/index.js';
 
+export interface ImportTypeFixPlan {
+  kind: 'import_type';
+  imports: Array<{
+    sourceFile: string;
+    targetFile: string;
+  }>;
+}
+
+export interface ExtractSharedFixPlan {
+  kind: 'extract_shared';
+  sourceFile: string;
+  targetFile: string;
+  symbols: string[];
+}
+
 export interface SemanticAnalysisResult {
   classification: Classification;
   confidence: number;
   reasons: string[];
+  plan?: ImportTypeFixPlan | ExtractSharedFixPlan;
 }
 
 export class SemanticAnalyzer {
@@ -23,7 +39,6 @@ export class SemanticAnalyzer {
   }
 
   public analyzeCycle(cyclePath: string[]): SemanticAnalysisResult {
-    // Basic deduplication of cyclical array
     const uniqueFiles = [...new Set(cyclePath)];
     if (uniqueFiles.length > 2) {
       /* v8 ignore next 5 */
@@ -35,16 +50,8 @@ export class SemanticAnalyzer {
     }
 
     const [fileA, fileB] = uniqueFiles;
-
-    // Attempt to load files
-    const absPathA = path.join(this.repoPath, fileA);
-    const absPathB = path.join(this.repoPath, fileB);
-
-    let sfA = this.project.getSourceFile(absPathA) || this.project.getSourceFile(fileA);
-    let sfB = this.project.getSourceFile(absPathB) || this.project.getSourceFile(fileB);
-
-    if (!sfA && fs.existsSync(absPathA)) sfA = this.project.addSourceFileAtPath(absPathA);
-    if (!sfB && fs.existsSync(absPathB)) sfB = this.project.addSourceFileAtPath(absPathB);
+    const sfA = this.loadCycleSourceFile(fileA);
+    const sfB = this.loadCycleSourceFile(fileB);
 
     if (!sfA || !sfB) {
       /* v8 ignore next 5 */
@@ -55,7 +62,6 @@ export class SemanticAnalyzer {
       };
     }
 
-    // Initial naive AST-based assessment
     const importsAToB = this.findImportsTo(sfA, fileB);
     const importsBToA = this.findImportsTo(sfB, fileA);
 
@@ -67,34 +73,43 @@ export class SemanticAnalyzer {
       };
     }
 
-    // Check for import type conversion opportunities
-    const typeOnlyOpportunitesA = this.checkTypeOnlyImports(importsAToB);
-    const typeOnlyOpportunitesB = this.checkTypeOnlyImports(importsBToA);
-
-    if (typeOnlyOpportunitesA || typeOnlyOpportunitesB) {
+    const typeOnlyImports = this.buildImportTypePlan(fileA, fileB, importsAToB, importsBToA);
+    if (typeOnlyImports.length > 0) {
       return {
         classification: 'autofix_import_type',
         confidence: 0.9,
         reasons: ['Cycle can be resolved by converting concrete imports to type-only imports.'],
+        plan: {
+          kind: 'import_type',
+          imports: typeOnlyImports,
+        },
       };
     }
 
-    // Check for extraction opportunities
     const symbolsFromBUsedInA = this.getImportedSymbolNames(importsAToB);
     const symbolsFromAUsedInB = this.getImportedSymbolNames(importsBToA);
+    const extractionPlan = this.buildExtractSharedPlan(
+      fileA,
+      fileB,
+      sfA,
+      sfB,
+      symbolsFromAUsedInB,
+      symbolsFromBUsedInA,
+    );
 
-    const bIsExtractable = this.isExtractable(sfB, symbolsFromBUsedInA, [fileA]);
-    const aIsExtractable = this.isExtractable(sfA, symbolsFromAUsedInB, [fileB]);
+    if (extractionPlan) {
+      const { sourceFile, targetFile, symbols } = extractionPlan;
 
-    if (bIsExtractable || aIsExtractable) {
       return {
         classification: 'autofix_extract_shared',
         confidence: 0.8,
-        reasons: [
-          `Cycle can be resolved by extracting ${
-            bIsExtractable ? 'symbols from ' + fileB : 'symbols from ' + fileA
-          } into a shared file.`,
-        ],
+        reasons: [`Cycle can be resolved by extracting symbols from ${sourceFile} into a shared file.`],
+        plan: {
+          kind: 'extract_shared',
+          sourceFile,
+          targetFile,
+          symbols,
+        },
       };
     }
 
@@ -172,6 +187,69 @@ export class SemanticAnalyzer {
   private getVariableStatementByDeclarationName(sourceFile: SourceFile, name: string): Node | undefined {
     const decl = sourceFile.getVariableDeclaration(name);
     return decl?.getVariableStatement();
+  }
+
+  private loadCycleSourceFile(filePath: string): SourceFile | undefined {
+    const absolutePath = path.join(this.repoPath, filePath);
+    const existingSourceFile = this.project.getSourceFile(absolutePath) || this.project.getSourceFile(filePath);
+
+    if (existingSourceFile) {
+      return existingSourceFile;
+    }
+
+    if (!fs.existsSync(absolutePath)) {
+      return undefined;
+    }
+
+    return this.project.addSourceFileAtPath(absolutePath);
+  }
+
+  private buildImportTypePlan(
+    fileA: string,
+    fileB: string,
+    importsAToB: ImportDeclaration[],
+    importsBToA: ImportDeclaration[],
+  ): ImportTypeFixPlan['imports'] {
+    const importPlans: ImportTypeFixPlan['imports'] = [];
+
+    if (this.checkTypeOnlyImports(importsAToB)) {
+      importPlans.push({ sourceFile: fileA, targetFile: fileB });
+    }
+
+    if (this.checkTypeOnlyImports(importsBToA)) {
+      importPlans.push({ sourceFile: fileB, targetFile: fileA });
+    }
+
+    return importPlans;
+  }
+
+  private buildExtractSharedPlan(
+    fileA: string,
+    fileB: string,
+    sourceFileA: SourceFile,
+    sourceFileB: SourceFile,
+    symbolsFromAUsedInB: string[],
+    symbolsFromBUsedInA: string[],
+  ): ExtractSharedFixPlan | undefined {
+    if (this.isExtractable(sourceFileB, symbolsFromBUsedInA, [fileA])) {
+      return {
+        kind: 'extract_shared',
+        sourceFile: fileB,
+        targetFile: fileA,
+        symbols: symbolsFromBUsedInA,
+      };
+    }
+
+    if (this.isExtractable(sourceFileA, symbolsFromAUsedInB, [fileB])) {
+      return {
+        kind: 'extract_shared',
+        sourceFile: fileA,
+        targetFile: fileB,
+        symbols: symbolsFromAUsedInB,
+      };
+    }
+
+    return undefined;
   }
 
   private findImportsTo(sourceFile: SourceFile, targetFilePath: string): ImportDeclaration[] {

@@ -120,59 +120,59 @@ The first release should only auto-fix cycles that match all or nearly all of th
 
 ### 3. AST and semantic analysis layer
 
-- [ ] Build an analysis service around ts-morph.
-- [ ] Parse both files participating in a two-file cycle.
-- [ ] Identify import edges crossing between the two files.
-- [ ] Resolve which imported symbols are actually responsible for the cross-file dependency.
-- [ ] For each candidate symbol, collect declaration kind, export kind, location, references, and free variables.
-- [ ] Detect whether the candidate symbol references module-local mutable state.
-- [ ] Detect whether the candidate symbol depends on sibling helpers that would also need to move.
-- [ ] Detect whether a candidate edge is type-only and may be solvable with `import type`.
+- [x] Build an analysis service around ts-morph.
+- [x] Parse both files participating in a two-file cycle.
+- [x] Identify import edges crossing between the two files.
+- [x] Resolve which imported symbols are actually responsible for the cross-file dependency.
+- [x] For each candidate symbol, collect declaration kind, export kind, location, references, and free variables. (Implemented classification based on these)
+- [x] Detect whether the candidate symbol references module-local mutable state. (Via dependency check)
+- [x] Detect whether the candidate symbol depends on sibling helpers that would also need to move.
+- [x] Detect whether a candidate edge is type-only and may be solvable with `import type`.
 - [ ] Detect barrel-file scenarios where direct imports may remove the cycle without extraction.
-- [ ] Produce a fix classification for each cycle.
+- [x] Produce a fix classification for each cycle.
 
 ### 4. Fix classification engine
 
-- [ ] Create a deterministic classification enum such as `autofix_extract_shared`, `autofix_direct_import`, `autofix_import_type`, `suggest_manual`, `unsupported`.
-- [ ] Mark two-file cycles with safe top-level declarations as `autofix_extract_shared`.
+- [x] Create a deterministic classification enum such as `autofix_extract_shared`, `autofix_direct_import`, `autofix_import_type`, `suggest_manual`, `unsupported`.
+- [x] Mark two-file cycles with safe top-level declarations as `autofix_extract_shared`.
 - [ ] Mark cycles caused by barrel imports as `autofix_direct_import` where safe.
-- [ ] Mark TS type-only opportunities as `autofix_import_type` where safe.
-- [ ] Mark class-heavy, side-effect-heavy, or multi-file entangled cycles as `suggest_manual` or `unsupported`.
-- [ ] Attach a confidence score and a reason list to every classification.
+- [x] Mark TS type-only opportunities as `autofix_import_type` where safe.
+- [x] Mark class-heavy, side-effect-heavy, or multi-file entangled cycles as `suggest_manual` or `unsupported`.
+- [x] Attach a confidence score and a reason list to every classification.
 
 ### 5. Shared-file extraction codemod
 
-- [ ] Implement extraction of top-level named functions, consts, type aliases, and interfaces into a new leaf file.
+- [x] Implement extraction of top-level named functions, consts, type aliases, and interfaces into a new leaf file. (Initial narrow implementation with deterministic pair-based shared filenames)
 - [ ] Prefer semantic file names like `shared.ts`, `render-primitives.tsx`, or `types.ts` when obvious.
-- [ ] Fall back to machine-generated pair names only when no better semantic name can be inferred.
-- [ ] Rewrite the original two files to import from the new shared file.
-- [ ] Preserve exports so the rest of the repo behaves the same as before.
-- [ ] Preserve relative import correctness from the new shared file.
+- [x] Fall back to machine-generated pair names only when no better semantic name can be inferred.
+- [x] Rewrite the original two files to import from the new shared file.
+- [x] Preserve exports so the rest of the repo behaves the same as before.
+- [x] Preserve relative import correctness from the new shared file.
 - [ ] Use recast or equivalent printing to reduce formatting churn.
-- [ ] Abort and mark failed if the extracted file would itself depend back on one of the original files.
+- [x] Abort and mark failed if the extracted file would itself depend back on one of the original files. (Current implementation fails closed before generation based on semantic analysis)
 
 ### 6. Alternate fix codemods for v1
 
 - [ ] Implement direct-import replacement when a barrel file causes the cycle and a direct leaf import removes it safely.
-- [ ] Implement `import type` conversion when a TS cycle is runtime-free and clearly type-only.
+- [x] Implement `import type` conversion when a TS cycle is runtime-free and clearly type-only. (Initial patch-generation implementation)
 - [ ] Keep these fixes behind the same validation requirements as extraction fixes.
 
 ### 7. Validation pipeline
 
-- [ ] Re-run dependency-cruiser after each rewrite attempt.
-- [ ] Verify that the original target cycle no longer exists.
+- [x] Re-run dependency-cruiser after each rewrite attempt.
+- [x] Verify that the original target cycle no longer exists.
 - [ ] Verify that no new circular dependency was introduced by the rewrite.
-- [ ] Run `tsc --noEmit` when a TypeScript project is detected.
+- [x] Run `tsc --noEmit` when a TypeScript project is detected. (Current implementation runs when `tsconfig.json` exists)
 - [ ] Optionally run repo lint if it is cheap and predictable.
 - [ ] Optionally run targeted tests if the repo has a simple and reliable command for them.
-- [ ] If validation fails, store the failure reason and keep the patch for manual inspection if useful.
+- [x] If validation fails, store the failure reason and keep the patch for manual inspection if useful.
 
 ### 8. Patch generation and artifact storage
 
-- [ ] Generate a unified diff patch for every successful rewrite.
-- [ ] Store patch text, touched files, classification, confidence, and validation summary in the database.
+- [x] Generate a unified diff patch for every successful rewrite. (Initial generated patch artifact format)
+- [x] Store patch text, touched files, classification, confidence, and validation summary in the database.
 - [ ] Store before and after cycle results for easy UI comparison.
-- [ ] Keep a copy of the generated shared file contents or transformed file contents for review.
+- [x] Keep a copy of the generated shared file contents or transformed file contents for review. (Included in persisted patch text)
 - [ ] Track whether a finding has been reviewed, approved, rejected, ignored, or turned into a PR candidate.
 
 ### 9. Database schema
@@ -245,10 +245,10 @@ The first release should only auto-fix cycles that match all or nearly all of th
 
 ### Slice 3: first autofix
 
-- [ ] Implement shared-file extraction for a very narrow safe case.
-- [ ] Generate patch files.
-- [ ] Re-run depcruise and typecheck.
-- [ ] Store successful patches.
+- [x] Implement shared-file extraction for a very narrow safe case.
+- [x] Generate patch files.
+- [x] Re-run depcruise and typecheck. (Initial validation pipeline implemented)
+- [x] Store successful patches.
 
 ### Slice 4: review workflow
 

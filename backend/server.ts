@@ -4,8 +4,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import {
   type CycleDTO,
   createStatements,
-  db as defaultDb,
   type FixCandidateDTO,
+  getDb,
   initSchema,
   type PatchDTO,
   type RepositoryDTO,
@@ -19,7 +19,7 @@ import {
  * Accepts an optional database instance for testing (defaults to the production DB).
  */
 export async function buildApp(database?: DatabaseType): Promise<FastifyInstance> {
-  const db = database ?? defaultDb;
+  const db = database ?? getDb();
   const stmts = createStatements(db);
 
   const fastify = Fastify({
@@ -255,7 +255,7 @@ export async function buildApp(database?: DatabaseType): Promise<FastifyInstance
 const isMainModule = process.argv[1]?.endsWith('server.ts') || process.argv[1]?.endsWith('server.js');
 
 if (isMainModule) {
-  initSchema(defaultDb);
+  initSchema(getDb());
 
   const app = await buildApp();
   const port = Number(process.env.BACKEND_PORT) || 3001;

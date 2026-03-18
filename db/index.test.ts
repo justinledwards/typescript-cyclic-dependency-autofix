@@ -10,8 +10,6 @@ import {
   addRepository as defaultAddRepository,
   addReviewDecision as defaultAddReviewDecision,
   addScan as defaultAddScan,
-  // Default production exports
-  db as defaultDb,
   getAllRepositories as defaultGetAllRepositories,
   getCyclesByScanId as defaultGetCyclesByScanId,
   getFixCandidatesByCycleId as defaultGetFixCandidatesByCycleId,
@@ -24,6 +22,8 @@ import {
   updateRepositoryStatus as defaultUpdateRepositoryStatus,
   updateScanStatus as defaultUpdateScanStatus,
   type FixCandidateDTO,
+  // Default production exports
+  getDb as getDefaultDb,
   initDb,
   initSchema,
   type PatchDTO,
@@ -472,6 +472,7 @@ describe('db module', () => {
 
 describe('default production exports', () => {
   it('exports a working db instance', () => {
+    const defaultDb = getDefaultDb();
     expect(defaultDb).toBeDefined();
     expect(defaultDb.open).toBe(true);
   });

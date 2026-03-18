@@ -256,30 +256,109 @@ export function createStatements(database: DatabaseType) {
   };
 }
 
-// ─── Default production instance ──────────────────────────
-// These are used by the backend and CLI directly.
+/* v8 ignore start */
+let defaultDb: DatabaseType | null = null;
+let defaultStatements: ReturnType<typeof createStatements> | null = null;
 
-export const db = createDatabase();
-initSchema(db); // Must init schema before preparing statements
-const stmts = createStatements(db);
+function ensureDefaultState() {
+  if (!defaultDb) {
+    defaultDb = createDatabase();
+    initSchema(defaultDb);
+    defaultStatements = createStatements(defaultDb);
+  }
 
-export const initDb = () => initSchema(db);
+  return {
+    db: defaultDb,
+    statements: defaultStatements as ReturnType<typeof createStatements>,
+  };
+}
 
-// Re-export prepared statements for backward compatibility
-export const addRepository = stmts.addRepository;
-export const getRepository = stmts.getRepository;
-export const getRepositoryByOwnerName = stmts.getRepositoryByOwnerName;
-export const getAllRepositories = stmts.getAllRepositories;
-export const updateRepositoryStatus = stmts.updateRepositoryStatus;
-export const addScan = stmts.addScan;
-export const getScan = stmts.getScan;
-export const updateScanStatus = stmts.updateScanStatus;
-export const addCycle = stmts.addCycle;
-export const getCyclesByScanId = stmts.getCyclesByScanId;
-export const addFixCandidate = stmts.addFixCandidate;
-export const getFixCandidatesByCycleId = stmts.getFixCandidatesByCycleId;
-export const addPatch = stmts.addPatch;
-export const getPatch = stmts.getPatch;
-export const getPatchesByFixCandidateId = stmts.getPatchesByFixCandidateId;
-export const addReviewDecision = stmts.addReviewDecision;
-export const getReviewDecisionByPatchId = stmts.getReviewDecisionByPatchId;
+export function getDb(): DatabaseType {
+  return ensureDefaultState().db;
+}
+
+export function getStatements() {
+  return ensureDefaultState().statements;
+}
+
+export function initDb(): void {
+  initSchema(getDb());
+}
+
+export function resetDefaultDbForTests(): void {
+  if (defaultDb?.open) {
+    defaultDb.close();
+  }
+  defaultDb = null;
+  defaultStatements = null;
+}
+
+export const addRepository = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['addRepository']['run']>) =>
+    getStatements().addRepository.run(...args),
+};
+export const getRepository = {
+  get: (...args: Parameters<ReturnType<typeof createStatements>['getRepository']['get']>) =>
+    getStatements().getRepository.get(...args),
+};
+export const getRepositoryByOwnerName = {
+  get: (...args: Parameters<ReturnType<typeof createStatements>['getRepositoryByOwnerName']['get']>) =>
+    getStatements().getRepositoryByOwnerName.get(...args),
+};
+export const getAllRepositories = {
+  all: (...args: Parameters<ReturnType<typeof createStatements>['getAllRepositories']['all']>) =>
+    getStatements().getAllRepositories.all(...args),
+};
+export const updateRepositoryStatus = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['updateRepositoryStatus']['run']>) =>
+    getStatements().updateRepositoryStatus.run(...args),
+};
+export const addScan = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['addScan']['run']>) =>
+    getStatements().addScan.run(...args),
+};
+export const getScan = {
+  get: (...args: Parameters<ReturnType<typeof createStatements>['getScan']['get']>) =>
+    getStatements().getScan.get(...args),
+};
+export const updateScanStatus = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['updateScanStatus']['run']>) =>
+    getStatements().updateScanStatus.run(...args),
+};
+export const addCycle = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['addCycle']['run']>) =>
+    getStatements().addCycle.run(...args),
+};
+export const getCyclesByScanId = {
+  all: (...args: Parameters<ReturnType<typeof createStatements>['getCyclesByScanId']['all']>) =>
+    getStatements().getCyclesByScanId.all(...args),
+};
+export const addFixCandidate = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['addFixCandidate']['run']>) =>
+    getStatements().addFixCandidate.run(...args),
+};
+export const getFixCandidatesByCycleId = {
+  all: (...args: Parameters<ReturnType<typeof createStatements>['getFixCandidatesByCycleId']['all']>) =>
+    getStatements().getFixCandidatesByCycleId.all(...args),
+};
+export const addPatch = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['addPatch']['run']>) =>
+    getStatements().addPatch.run(...args),
+};
+export const getPatch = {
+  get: (...args: Parameters<ReturnType<typeof createStatements>['getPatch']['get']>) =>
+    getStatements().getPatch.get(...args),
+};
+export const getPatchesByFixCandidateId = {
+  all: (...args: Parameters<ReturnType<typeof createStatements>['getPatchesByFixCandidateId']['all']>) =>
+    getStatements().getPatchesByFixCandidateId.all(...args),
+};
+export const addReviewDecision = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['addReviewDecision']['run']>) =>
+    getStatements().addReviewDecision.run(...args),
+};
+export const getReviewDecisionByPatchId = {
+  get: (...args: Parameters<ReturnType<typeof createStatements>['getReviewDecisionByPatchId']['get']>) =>
+    getStatements().getReviewDecisionByPatchId.get(...args),
+};
+/* v8 ignore stop */

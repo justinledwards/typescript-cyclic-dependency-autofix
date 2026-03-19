@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { type ImportDeclaration, Node, Project, type SourceFile, SyntaxKind } from 'ts-morph';
+import { type ExportDeclaration, type ImportDeclaration, Node, Project, type SourceFile, SyntaxKind } from 'ts-morph';
 import type { Classification } from '../db/index.js';
 
 export interface ImportTypeFixPlan {
@@ -8,6 +8,16 @@ export interface ImportTypeFixPlan {
   imports: Array<{
     sourceFile: string;
     targetFile: string;
+  }>;
+}
+
+export interface DirectImportFixPlan {
+  kind: 'direct_import';
+  imports: Array<{
+    sourceFile: string;
+    barrelFile: string;
+    targetFile: string;
+    symbols: string[];
   }>;
 }
 
@@ -22,7 +32,12 @@ export interface SemanticAnalysisResult {
   classification: Classification;
   confidence: number;
   reasons: string[];
-  plan?: ImportTypeFixPlan | ExtractSharedFixPlan;
+  plan?: ImportTypeFixPlan | DirectImportFixPlan | ExtractSharedFixPlan;
+}
+
+interface DirectImportSearchResult {
+  plan?: DirectImportFixPlan['imports'];
+  sawBarrelScenario: boolean;
 }
 
 export class SemanticAnalyzer {
@@ -40,7 +55,32 @@ export class SemanticAnalyzer {
 
   public analyzeCycle(cyclePath: string[]): SemanticAnalysisResult {
     const uniqueFiles = [...new Set(cyclePath)];
+    const directImportResult = uniqueFiles.length > 2 ? this.buildDirectImportPlan(uniqueFiles) : undefined;
+
+    if (directImportResult?.plan && directImportResult.plan.length > 0) {
+      const { barrelFile, targetFile, symbols } = directImportResult.plan[0];
+      return {
+        classification: 'autofix_direct_import',
+        confidence: 0.85,
+        reasons: [
+          `Cycle can be resolved by importing ${symbols.join(', ')} directly from ${targetFile} instead of ${barrelFile}.`,
+        ],
+        plan: {
+          kind: 'direct_import',
+          imports: directImportResult.plan,
+        },
+      };
+    }
+
     if (uniqueFiles.length > 2) {
+      if (directImportResult?.sawBarrelScenario) {
+        return {
+          classification: 'suggest_manual',
+          confidence: 0.6,
+          reasons: ['Barrel re-export graph is ambiguous or side-effectful, so a direct-import rewrite is not safe.'],
+        };
+      }
+
       /* v8 ignore next 5 */
       return {
         classification: 'unsupported',
@@ -250,6 +290,319 @@ export class SemanticAnalyzer {
     }
 
     return undefined;
+  }
+
+  private buildDirectImportPlan(cycleFiles: string[]): DirectImportSearchResult {
+    let sawBarrelScenario = false;
+
+    for (const sourceFilePath of cycleFiles) {
+      const searchResult = this.findDirectImportCandidateForSource(sourceFilePath, cycleFiles);
+      sawBarrelScenario ||= searchResult.sawBarrelScenario;
+      if (searchResult.plan) {
+        return searchResult;
+      }
+    }
+
+    return {
+      sawBarrelScenario,
+    };
+  }
+
+  private findDirectImportCandidateForSource(sourceFilePath: string, cycleFiles: string[]): DirectImportSearchResult {
+    const sourceFile = this.loadCycleSourceFile(sourceFilePath);
+    if (!sourceFile) {
+      return { sawBarrelScenario: false };
+    }
+
+    let sawBarrelScenario = false;
+
+    for (const barrelFilePath of cycleFiles) {
+      if (barrelFilePath === sourceFilePath) {
+        continue;
+      }
+
+      const barrelFile = this.loadCycleSourceFile(barrelFilePath);
+      if (!barrelFile || !this.hasReExportDeclarations(barrelFile)) {
+        continue;
+      }
+
+      const importDeclarations = this.findImportsTo(sourceFile, barrelFilePath);
+      if (importDeclarations.length === 0) {
+        continue;
+      }
+
+      sawBarrelScenario = true;
+
+      const candidate = this.findDirectImportCandidateForDeclarations(
+        sourceFilePath,
+        barrelFilePath,
+        barrelFile,
+        importDeclarations,
+        cycleFiles,
+      );
+      if (candidate) {
+        return {
+          sawBarrelScenario: true,
+          plan: [candidate],
+        };
+      }
+    }
+
+    return { sawBarrelScenario };
+  }
+
+  private findDirectImportCandidateForDeclarations(
+    sourceFilePath: string,
+    barrelFilePath: string,
+    barrelFile: SourceFile,
+    importDeclarations: ImportDeclaration[],
+    cycleFiles: string[],
+  ): DirectImportFixPlan['imports'][number] | undefined {
+    for (const importDecl of importDeclarations) {
+      const candidate = this.tryBuildDirectImportCandidate(
+        sourceFilePath,
+        barrelFilePath,
+        barrelFile,
+        importDecl,
+        cycleFiles,
+      );
+      if (candidate) {
+        return candidate;
+      }
+    }
+
+    return undefined;
+  }
+
+  private tryBuildDirectImportCandidate(
+    sourceFilePath: string,
+    barrelFilePath: string,
+    barrelFile: SourceFile,
+    importDecl: ImportDeclaration,
+    cycleFiles: string[],
+  ): DirectImportFixPlan['imports'][number] | undefined {
+    if (importDecl.getDefaultImport() || importDecl.getNamespaceImport() || importDecl.getNamedImports().length === 0) {
+      return undefined;
+    }
+
+    const importedNames = importDecl.getNamedImports().map((namedImport) => namedImport.getName());
+    const resolution = this.resolveDirectImportTarget(barrelFile, importedNames);
+    if (!resolution) {
+      return undefined;
+    }
+
+    if (!this.isWithinRepo(resolution.targetFile)) {
+      return undefined;
+    }
+
+    const targetFilePath = this.toRepoRelativePath(resolution.targetFile);
+    if (targetFilePath === sourceFilePath || targetFilePath === barrelFilePath) {
+      return undefined;
+    }
+
+    const targetSourceFile = this.loadCycleSourceFile(targetFilePath);
+    if (targetSourceFile && this.hasDependenciesOnFiles(targetSourceFile, cycleFiles)) {
+      return undefined;
+    }
+
+    return {
+      sourceFile: sourceFilePath,
+      barrelFile: barrelFilePath,
+      targetFile: targetFilePath,
+      symbols: importedNames,
+    };
+  }
+
+  private resolveDirectImportTarget(
+    barrelFile: SourceFile,
+    importedNames: string[],
+    visited = new Set<string>(),
+  ): { targetFile: string; symbols: string[] } | undefined {
+    if (!this.isPureBarrelModule(barrelFile)) {
+      return undefined;
+    }
+
+    let resolvedTarget: string | undefined;
+
+    for (const importedName of importedNames) {
+      const resolved = this.resolveExportedSymbol(barrelFile, importedName, new Set(visited));
+      if (!resolved) {
+        return undefined;
+      }
+
+      if (resolvedTarget && resolvedTarget !== resolved.targetFile) {
+        return undefined;
+      }
+
+      resolvedTarget = resolved.targetFile;
+    }
+
+    return resolvedTarget
+      ? {
+          targetFile: resolvedTarget,
+          symbols: importedNames,
+        }
+      : undefined;
+  }
+
+  private resolveExportedSymbol(
+    sourceFile: SourceFile,
+    exportedName: string,
+    visited: Set<string>,
+  ): { targetFile: string } | undefined {
+    const filePath = sourceFile.getFilePath();
+    const visitKey = `${filePath}::${exportedName}`;
+    if (visited.has(visitKey)) {
+      return undefined;
+    }
+    visited.add(visitKey);
+
+    if (!this.hasReExportDeclarations(sourceFile)) {
+      return this.resolveLocalExportTarget(sourceFile, exportedName);
+    }
+
+    if (!this.isPureBarrelModule(sourceFile)) {
+      return undefined;
+    }
+
+    return this.resolveExportedSymbolFromReExports(sourceFile, exportedName, visited);
+  }
+
+  private resolveLocalExportTarget(sourceFile: SourceFile, exportedName: string): { targetFile: string } | undefined {
+    return sourceFile.getExportedDeclarations().has(exportedName)
+      ? { targetFile: sourceFile.getFilePath() }
+      : undefined;
+  }
+
+  private resolveExportedSymbolFromReExports(
+    sourceFile: SourceFile,
+    exportedName: string,
+    visited: Set<string>,
+  ): { targetFile: string } | undefined {
+    let resolvedTarget: string | undefined;
+
+    for (const exportDecl of sourceFile.getExportDeclarations()) {
+      const resolved = this.resolveExportDeclarationTarget(exportDecl, exportedName, visited);
+      if (!resolved) {
+        continue;
+      }
+
+      if (resolvedTarget && resolvedTarget !== resolved.targetFile) {
+        return undefined;
+      }
+
+      resolvedTarget = resolved.targetFile;
+    }
+
+    return resolvedTarget ? { targetFile: resolvedTarget } : undefined;
+  }
+
+  private resolveExportDeclarationTarget(
+    exportDecl: ExportDeclaration,
+    exportedName: string,
+    visited: Set<string>,
+  ): { targetFile: string } | undefined {
+    const moduleSpecifier = exportDecl.getModuleSpecifierValue();
+    if (!moduleSpecifier || exportDecl.getNamespaceExport()) {
+      return undefined;
+    }
+
+    const namedExports = exportDecl.getNamedExports();
+    if (namedExports.length === 0) {
+      return undefined;
+    }
+
+    const matchingExport = namedExports.find(
+      (namedExport) => this.getExportedSpecifierName(namedExport) === exportedName,
+    );
+    if (!matchingExport) {
+      return undefined;
+    }
+
+    const resolvedPath = this.resolveModulePath(exportDecl.getSourceFile().getFilePath(), moduleSpecifier);
+    if (!resolvedPath || !this.isWithinRepo(resolvedPath)) {
+      return undefined;
+    }
+
+    const nextSourceFile = this.loadCycleSourceFile(this.toRepoRelativePath(resolvedPath));
+    if (!nextSourceFile) {
+      return undefined;
+    }
+
+    return this.resolveExportedSymbol(nextSourceFile, matchingExport.getName(), new Set(visited));
+  }
+
+  private getExportedSpecifierName(namedExport: {
+    getAliasNode(): { getText(): string } | undefined;
+    getName(): string;
+  }): string {
+    return namedExport.getAliasNode()?.getText() ?? namedExport.getName();
+  }
+
+  private isPureBarrelModule(sourceFile: SourceFile): boolean {
+    const statements = sourceFile.getStatements();
+    if (statements.some((statement) => !Node.isImportDeclaration(statement) && !Node.isExportDeclaration(statement))) {
+      return false;
+    }
+
+    for (const importDecl of sourceFile.getImportDeclarations()) {
+      if (
+        !importDecl.isTypeOnly() &&
+        importDecl.getNamedImports().length === 0 &&
+        !importDecl.getDefaultImport() &&
+        !importDecl.getNamespaceImport()
+      ) {
+        return false;
+      }
+    }
+
+    const exportDeclarations = sourceFile.getExportDeclarations();
+    return exportDeclarations.length > 0 && exportDeclarations.every((decl) => Boolean(decl.getModuleSpecifierValue()));
+  }
+
+  private hasReExportDeclarations(sourceFile: SourceFile): boolean {
+    return sourceFile.getExportDeclarations().some((decl) => Boolean(decl.getModuleSpecifierValue()));
+  }
+
+  private resolveModulePath(filePath: string, moduleSpecifier: string): string | undefined {
+    if (!moduleSpecifier.startsWith('.') && !path.isAbsolute(moduleSpecifier)) {
+      return undefined;
+    }
+
+    const sourceDir = path.dirname(filePath);
+    const resolvedPath = path.isAbsolute(moduleSpecifier) ? moduleSpecifier : path.resolve(sourceDir, moduleSpecifier);
+    return this.findExistingModulePath(resolvedPath);
+  }
+
+  private findExistingModulePath(basePath: string): string | undefined {
+    const candidates = [
+      basePath,
+      `${basePath}.ts`,
+      `${basePath}.tsx`,
+      `${basePath}.js`,
+      `${basePath}.jsx`,
+      path.join(basePath, 'index.ts'),
+      path.join(basePath, 'index.tsx'),
+      path.join(basePath, 'index.js'),
+      path.join(basePath, 'index.jsx'),
+    ];
+
+    for (const candidate of candidates) {
+      if (this.project.getSourceFile(candidate) || fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    return undefined;
+  }
+
+  private toRepoRelativePath(absolutePath: string): string {
+    return path.relative(this.repoPath, absolutePath).split(path.sep).join('/');
+  }
+
+  private isWithinRepo(absolutePath: string): boolean {
+    const relativePath = path.relative(this.repoPath, absolutePath);
+    return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
   }
 
   private findImportsTo(sourceFile: SourceFile, targetFilePath: string): ImportDeclaration[] {

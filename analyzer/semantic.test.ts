@@ -79,12 +79,46 @@ describe('SemanticAnalyzer', () => {
 
     const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'a.ts']);
     expect(result.classification).toBe('autofix_extract_shared');
-    expect(result.reasons[0]).toMatch(/extracting symbols/);
+    expect(result.reasons[0]).toMatch(/helperB/);
+    expect(result.reasons[0]).toMatch(/helperB\.shared\.ts/);
     expect(result.plan).toEqual({
       kind: 'extract_shared',
       sourceFile: 'b.ts',
       targetFile: 'a.ts',
       symbols: ['helperB'],
+      sharedFile: 'helperB.shared.ts',
+      preserveSourceExports: true,
+    });
+  });
+
+  it('avoids colliding with an existing shared module path', () => {
+    analyzer.project.createSourceFile(
+      '/dummy/repo/a.ts',
+      `
+      import { helperB } from './b';
+      export const mainA = () => helperB();
+    `,
+    );
+    analyzer.project.createSourceFile(
+      '/dummy/repo/b.ts',
+      `
+      import { mainA } from './a';
+      export const helperB = () => console.log("B");
+      export const sideEffectB = () => mainA();
+    `,
+    );
+    analyzer.project.createSourceFile('/dummy/repo/helperB.shared.ts', 'export const alreadyThere = true;');
+
+    const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'a.ts']);
+
+    expect(result.classification).toBe('autofix_extract_shared');
+    expect(result.plan).toEqual({
+      kind: 'extract_shared',
+      sourceFile: 'b.ts',
+      targetFile: 'a.ts',
+      symbols: ['helperB'],
+      sharedFile: 'b-a.shared.ts',
+      preserveSourceExports: true,
     });
   });
 

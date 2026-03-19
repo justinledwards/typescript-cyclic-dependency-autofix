@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { type ImportDeclaration, Project, type SourceFile } from 'ts-morph';
+import { type ImportDeclaration, Project, type SourceFile, SyntaxKind } from 'ts-morph';
 import type { CircularDependency } from '../analyzer/analyzer.js';
 import type {
   DirectImportFixPlan,
@@ -110,8 +110,8 @@ async function generateExtractSharedPatch(
   const project = createProject();
   const sourceFile = getProjectSourceFile(project, repoPath, plan.sourceFile);
   const targetFile = getProjectSourceFile(project, repoPath, plan.targetFile);
-  const sharedFilePath = chooseSharedFilePath(repoPath, plan.sourceFile, plan.targetFile);
-  const sharedRelativePath = path.relative(repoPath, sharedFilePath).split(path.sep).join('/');
+  const sharedFilePath = path.resolve(repoPath, plan.sharedFile);
+  const sharedRelativePath = plan.sharedFile;
 
   const sourceBefore = sourceFile.getFullText();
   const targetBefore = targetFile.getFullText();
@@ -141,8 +141,12 @@ async function generateExtractSharedPatch(
   );
 
   addNamedImport(targetFile, sharedImportSpecifier, plan.symbols);
-  addNamedImport(sourceFile, sharedImportSpecifierFromSource, plan.symbols);
-  addNamedExport(sourceFile, sharedImportSpecifierFromSource, plan.symbols);
+  if (sourceFileNeedsSharedImport(sourceFile, plan.symbols)) {
+    addNamedImport(sourceFile, sharedImportSpecifierFromSource, plan.symbols);
+  }
+  if (plan.preserveSourceExports) {
+    addNamedExport(sourceFile, sharedImportSpecifierFromSource, plan.symbols);
+  }
 
   const extension = path.extname(sharedFilePath);
   const sharedFile = project.createSourceFile(sharedFilePath, `${extractedDeclarations.join('\n\n')}\n`, {
@@ -318,17 +322,6 @@ function createUnifiedPatch(snapshot: FileSnapshot): string {
   ].join('\n');
 }
 
-function chooseSharedFilePath(repoPath: string, sourceFile: string, targetFile: string): string {
-  const sourceDir = path.dirname(path.resolve(repoPath, sourceFile));
-  const sourceExt = path.extname(sourceFile);
-  const targetExt = path.extname(targetFile);
-  const preferredExt = sourceExt === targetExt ? sourceExt : '.ts';
-  const sourceStem = path.basename(sourceFile, sourceExt);
-  const targetStem = path.basename(targetFile, targetExt);
-
-  return path.join(sourceDir, `${sourceStem}-${targetStem}.shared${preferredExt}`);
-}
-
 function findExtractableDeclaration(sourceFile: SourceFile, symbol: string) {
   return (
     sourceFile.getInterface(symbol) ||
@@ -360,6 +353,13 @@ function cleanupImports(sourceFile: SourceFile, targetFile: string, extractedNam
       importDecl.remove();
     }
   }
+}
+
+function sourceFileNeedsSharedImport(sourceFile: SourceFile, symbols: string[]): boolean {
+  const extractedNameSet = new Set(symbols);
+  return sourceFile
+    .getDescendantsOfKind(SyntaxKind.Identifier)
+    .some((identifier) => extractedNameSet.has(identifier.getText()));
 }
 
 function addNamedImport(sourceFile: SourceFile, moduleSpecifier: string, names: string[]) {

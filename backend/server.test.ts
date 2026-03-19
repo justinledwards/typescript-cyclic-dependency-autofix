@@ -442,6 +442,90 @@ describe('backend API', () => {
       expect(detail.review_status).toBe('approved');
     });
 
+    it('GET /api/repositories/:id/cycles/:cycleId returns replay provenance when available', async () => {
+      const stmts = createStatements(testDb);
+      const repoInfo = stmts.addRepository.run({
+        owner: 'replay-detail',
+        name: 'repo',
+        default_branch: 'main',
+        local_path: '/tmp/replay-detail',
+      });
+      const scanInfo = stmts.addScan.run({
+        repository_id: repoInfo.lastInsertRowid,
+        commit_sha: 'replay1',
+        status: 'completed',
+      });
+      const cycleInfo = stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'x->y',
+        participating_files: JSON.stringify(['x.ts', 'y.ts']),
+        raw_payload: JSON.stringify({ violations: [] }),
+      });
+      const fcInfo = stmts.addFixCandidate.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        classification: 'autofix_extract_shared',
+        confidence: 0.91,
+        reasons: JSON.stringify(['safe']),
+      });
+      const patchInfo = stmts.addPatch.run({
+        fix_candidate_id: fcInfo.lastInsertRowid,
+        patch_text: '--- a/x.ts\n+++ b/x.ts',
+        touched_files: '["x.ts"]',
+        validation_status: 'passed',
+        validation_summary: 'clean',
+      });
+      stmts.addPatchReplay.run({
+        patch_id: patchInfo.lastInsertRowid,
+        scan_id: scanInfo.lastInsertRowid,
+        source_target: '/tmp/replay-detail',
+        commit_sha: 'replay1',
+        replay_bundle: JSON.stringify({
+          scan_id: scanInfo.lastInsertRowid,
+          source_target: '/tmp/replay-detail',
+          commit_sha: 'replay1',
+          repository: {
+            owner: 'replay-detail',
+            name: 'repo',
+            default_branch: 'main',
+            local_path: '/tmp/replay-detail',
+          },
+          cycle: {
+            path: ['x.ts', 'y.ts'],
+            normalized_path: 'x -> y',
+            raw_payload: { violations: [] },
+          },
+          candidate: {
+            classification: 'autofix_extract_shared',
+            confidence: 0.91,
+            reasons: ['safe'],
+          },
+          validation: {
+            status: 'passed',
+            summary: 'clean',
+          },
+          file_snapshots: [
+            {
+              path: 'x.ts',
+              before: 'before',
+              after: 'after',
+            },
+          ],
+          patch_text: '--- a/x.ts\n+++ b/x.ts',
+        }),
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/repositories/${repoInfo.lastInsertRowid}/cycles/${cycleInfo.lastInsertRowid}`,
+      });
+      expect(response.statusCode).toBe(200);
+      const detail = response.json();
+      expect(detail.replay.source_target).toBe('/tmp/replay-detail');
+      expect(detail.replay.commit_sha).toBe('replay1');
+      expect(detail.replay.validation.summary).toBe('clean');
+      expect(detail.replay.file_snapshots).toHaveLength(1);
+    });
+
     it('GET /api/repositories/:id/cycles/:cycleId returns 404 for non-existent cycle', async () => {
       const response = await app.inject({
         method: 'GET',

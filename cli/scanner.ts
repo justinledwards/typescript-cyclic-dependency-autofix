@@ -2,20 +2,25 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import simpleGit from 'simple-git';
 import { analyzeRepository } from '../analyzer/analyzer.js';
+import type { GeneratedPatch } from '../codemod/generatePatch.js';
 import { generatePatchForCycle } from '../codemod/generatePatch.js';
-import { validateGeneratedPatch } from './validation.js';
+import { validateGeneratedPatch, type ValidationResult } from './validation.js';
 import type { RepositoryDTO } from '../db/index.js';
 import {
   addCycle,
   addFixCandidate,
   addPatch,
+  addPatchReplay,
   addRepository,
   addScan,
+  getDb,
   getRepositoryByOwnerName,
   updateRepositoryLocalPath,
   updateRepositoryStatus,
   updateScanStatus,
 } from '../db/index.js';
+
+type ScannedCycle = Awaited<ReturnType<typeof analyzeRepository>>[number];
 
 function parseTargetUrl(targetUrlOrOwnerName: string) {
   let owner = 'unknown';
@@ -81,7 +86,7 @@ export async function scanRepository(targetUrlOrOwnerName: string, worktreesDir 
     const cycles = await analyzeRepository(resolvedTarget.repoPath);
 
     for (const cycle of cycles) {
-      await persistCycle(scanId, resolvedTarget.repoPath, cycle);
+      await persistCycle(scanId, resolvedTarget.repoPath, targetUrlOrOwnerName, commitSha, repo, cycle);
     }
 
     updateScanStatus.run({ id: scanId, status: 'completed' });
@@ -112,6 +117,11 @@ function ensureRepository(owner: string, name: string, localPath: string | null)
     default_branch: 'main',
     local_path: localPath,
   });
+
+  const createdRepo = getRepositoryByOwnerName.get(owner, name) as RepositoryDTO | undefined;
+  if (createdRepo) {
+    return createdRepo;
+  }
 
   return { id: info.lastInsertRowid as number, owner, name } as RepositoryDTO;
 }
@@ -248,7 +258,10 @@ async function getLatestCommitSha(gitRepo: ReturnType<typeof simpleGit>): Promis
 async function persistCycle(
   scanId: number,
   repoPath: string,
-  cycle: Awaited<ReturnType<typeof analyzeRepository>>[number],
+  sourceTarget: string,
+  commitSha: string,
+  repository: RepositoryDTO,
+  cycle: ScannedCycle,
 ): Promise<void> {
   const cycleInfo = addCycle.run({
     scan_id: scanId,
@@ -274,11 +287,92 @@ async function persistCycle(
   }
 
   const validation = await validateGeneratedPatch(repoPath, cycle, generatedPatch);
-  addPatch.run({
+  const patchPayload = {
     fix_candidate_id: fixCandidateInfo.lastInsertRowid as number,
     patch_text: generatedPatch.patchText,
     touched_files: JSON.stringify(generatedPatch.touchedFiles),
     validation_status: validation.status,
     validation_summary: validation.summary,
+  };
+  const replayBundle = buildPatchReplayBundle({
+    scanId,
+    sourceTarget,
+    commitSha,
+    repository,
+    cycle,
+    generatedPatch,
+    validation,
   });
+
+  getDb()
+    .transaction((patchRow: typeof patchPayload, replayBundleJson: string) => {
+      const patchInfo = addPatch.run(patchRow);
+      addPatchReplay.run({
+        patch_id: patchInfo.lastInsertRowid as number,
+        scan_id: scanId,
+        source_target: sourceTarget,
+        commit_sha: commitSha,
+        replay_bundle: replayBundleJson,
+      });
+    })(patchPayload, JSON.stringify(replayBundle));
+}
+
+interface PatchReplayBundle {
+  scan_id: number;
+  source_target: string;
+  commit_sha: string;
+  repository: {
+    owner: string;
+    name: string;
+    default_branch: string | null;
+    local_path: string | null;
+  };
+  cycle: {
+    path: string[];
+    normalized_path: string;
+    raw_payload: ScannedCycle;
+  };
+  candidate: {
+    classification: string;
+    confidence: number;
+    reasons: string[] | null;
+  };
+  validation: ValidationResult;
+  file_snapshots: GeneratedPatch['fileSnapshots'];
+  patch_text: string;
+}
+
+function buildPatchReplayBundle(args: {
+  scanId: number;
+  sourceTarget: string;
+  commitSha: string;
+  repository: RepositoryDTO;
+  cycle: ScannedCycle;
+  generatedPatch: GeneratedPatch;
+  validation: ValidationResult;
+}): PatchReplayBundle {
+  return {
+    scan_id: args.scanId,
+    source_target: args.sourceTarget,
+    commit_sha: args.commitSha,
+    repository: {
+      owner: args.repository.owner,
+      name: args.repository.name,
+      default_branch: args.repository.default_branch ?? null,
+      local_path: args.repository.local_path ?? null,
+    },
+    cycle: {
+      path: args.cycle.path,
+      normalized_path: args.cycle.path.join(' -> '),
+      raw_payload: args.cycle,
+    },
+    candidate: {
+      classification: args.cycle.analysis?.classification ?? 'unsupported',
+      confidence: args.cycle.analysis?.confidence ?? 0,
+      reasons: args.cycle.analysis?.reasons ?? null,
+    },
+    validation: args.validation,
+    file_snapshots: args.generatedPatch.fileSnapshots,
+    patch_text: args.generatedPatch.patchText,
+  };
 }

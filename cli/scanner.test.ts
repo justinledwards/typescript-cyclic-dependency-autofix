@@ -41,6 +41,8 @@ vi.mock('../db/index.js', async () => {
     getFixCandidatesByCycleId: stmts.getFixCandidatesByCycleId,
     addPatch: stmts.addPatch,
     getPatchesByFixCandidateId: stmts.getPatchesByFixCandidateId,
+    addPatchReplay: stmts.addPatchReplay,
+    getPatchReplayByPatchId: stmts.getPatchReplayByPatchId,
   };
 });
 
@@ -65,6 +67,7 @@ describe('Scanner Worker', () => {
       summary: 'Validation passed.',
     });
 
+    dbModule.getDb().prepare('DELETE FROM patch_replays').run();
     dbModule.getDb().prepare('DELETE FROM patches').run();
     dbModule.getDb().prepare('DELETE FROM fix_candidates').run();
     dbModule.getDb().prepare('DELETE FROM cycles').run();
@@ -276,10 +279,18 @@ describe('Scanner Worker', () => {
     const result = await scanRepository('org/patch');
     const cycles = dbModule.getCyclesByScanId.all(result.scanId) as Array<{ id: number }>;
     const candidates = dbModule.getFixCandidatesByCycleId.all(cycles[0].id) as Array<{ id: number }>;
-    const patches = dbModule.getPatchesByFixCandidateId.all(candidates[0].id) as Array<{ patch_text: string }>;
+    const patches = dbModule.getPatchesByFixCandidateId.all(candidates[0].id) as Array<{ id: number; patch_text: string }>;
+    const replay = dbModule.getPatchReplayByPatchId.get(patches[0].id) as {
+      source_target: string;
+      commit_sha: string;
+      replay_bundle: string;
+    };
 
     expect(patches).toHaveLength(1);
     expect(patches[0].patch_text).toContain('--- a/a.ts');
+    expect(replay.source_target).toBe('org/patch');
+    expect(replay.commit_sha).toBe('mock-sha');
+    expect(JSON.parse(replay.replay_bundle).file_snapshots).toHaveLength(1);
   });
 
   it('persists failed validation summaries when a generated patch does not validate', async () => {
@@ -321,12 +332,17 @@ describe('Scanner Worker', () => {
     const cycles = dbModule.getCyclesByScanId.all(result.scanId) as Array<{ id: number }>;
     const candidates = dbModule.getFixCandidatesByCycleId.all(cycles[0].id) as Array<{ id: number }>;
     const patches = dbModule.getPatchesByFixCandidateId.all(candidates[0].id) as Array<{
+      id: number;
       validation_status: string;
       validation_summary: string;
     }>;
+    const replay = dbModule.getPatchReplayByPatchId.get(patches[0].id) as { validation_bundle?: string } & {
+      replay_bundle: string;
+    };
 
     expect(patches).toHaveLength(1);
     expect(patches[0].validation_status).toBe('failed');
     expect(patches[0].validation_summary).toContain('original cycle is still present');
+    expect(JSON.parse(replay.replay_bundle).validation.summary).toContain('original cycle is still present');
   });
 });

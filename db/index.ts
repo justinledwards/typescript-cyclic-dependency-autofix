@@ -54,6 +54,16 @@ export interface PatchDTO {
   created_at: string;
 }
 
+export interface PatchReplayDTO {
+  id: number;
+  patch_id: number;
+  scan_id: number;
+  source_target: string;
+  commit_sha: string;
+  replay_bundle: string;
+  created_at: string;
+}
+
 export interface ReviewDecisionDTO {
   id: number;
   patch_id: number;
@@ -136,6 +146,18 @@ const SCHEMA_SQL = `
     FOREIGN KEY (fix_candidate_id) REFERENCES fix_candidates(id)
   );
 
+  CREATE TABLE IF NOT EXISTS patch_replays (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    patch_id INTEGER NOT NULL UNIQUE,
+    scan_id INTEGER NOT NULL,
+    source_target TEXT NOT NULL,
+    commit_sha TEXT NOT NULL,
+    replay_bundle TEXT NOT NULL, -- JSON string
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (patch_id) REFERENCES patches(id),
+    FOREIGN KEY (scan_id) REFERENCES scans(id)
+  );
+
   CREATE TABLE IF NOT EXISTS review_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     patch_id INTEGER NOT NULL,
@@ -155,6 +177,8 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_fix_candidates_classification ON fix_candidates(classification);
   CREATE INDEX IF NOT EXISTS idx_fix_candidates_confidence ON fix_candidates(confidence);
   CREATE INDEX IF NOT EXISTS idx_patches_fix_candidate_id ON patches(fix_candidate_id);
+  CREATE INDEX IF NOT EXISTS idx_patch_replays_patch_id ON patch_replays(patch_id);
+  CREATE INDEX IF NOT EXISTS idx_patch_replays_scan_id ON patch_replays(scan_id);
   CREATE INDEX IF NOT EXISTS idx_review_decisions_patch_id ON review_decisions(patch_id);
   CREATE INDEX IF NOT EXISTS idx_review_decisions_decision ON review_decisions(decision);
 `;
@@ -249,6 +273,15 @@ export function createStatements(database: DatabaseType) {
     `),
     getPatchesByFixCandidateId: database.prepare(`
       SELECT * FROM patches WHERE fix_candidate_id = ?
+    `),
+
+    // Patch Replays
+    addPatchReplay: database.prepare(`
+      INSERT INTO patch_replays (patch_id, scan_id, source_target, commit_sha, replay_bundle)
+      VALUES (@patch_id, @scan_id, @source_target, @commit_sha, @replay_bundle)
+    `),
+    getPatchReplayByPatchId: database.prepare(`
+      SELECT * FROM patch_replays WHERE patch_id = ?
     `),
 
     // Review Decisions
@@ -366,6 +399,14 @@ export const getPatch = {
 export const getPatchesByFixCandidateId = {
   all: (...args: Parameters<ReturnType<typeof createStatements>['getPatchesByFixCandidateId']['all']>) =>
     getStatements().getPatchesByFixCandidateId.all(...args),
+};
+export const addPatchReplay = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['addPatchReplay']['run']>) =>
+    getStatements().addPatchReplay.run(...args),
+};
+export const getPatchReplayByPatchId = {
+  get: (...args: Parameters<ReturnType<typeof createStatements>['getPatchReplayByPatchId']['get']>) =>
+    getStatements().getPatchReplayByPatchId.get(...args),
 };
 export const addReviewDecision = {
   run: (...args: Parameters<ReturnType<typeof createStatements>['addReviewDecision']['run']>) =>

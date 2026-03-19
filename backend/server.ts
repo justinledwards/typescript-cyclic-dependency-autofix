@@ -7,6 +7,7 @@ import {
   type FixCandidateDTO,
   getDb,
   initSchema,
+  type PatchReplayDTO,
   type PatchDTO,
   type RepositoryDTO,
   type RepositoryStatus,
@@ -68,6 +69,14 @@ function parseJsonValue<T>(value: string | null, fallback: T): T {
     return JSON.parse(value) as T;
   } catch {
     return fallback;
+  }
+}
+
+function parseReplayBundle(value: string): Record<string, unknown> {
+  try {
+    return JSON.parse(value) as Record<string, unknown>;
+  } catch {
+    return {};
   }
 }
 
@@ -410,6 +419,7 @@ export async function buildApp(database?: DatabaseType): Promise<FastifyInstance
       | undefined;
 
     let patch: PatchDTO | undefined;
+    let patchReplay: PatchReplayDTO | undefined;
     let reviewDecision: ReviewDecisionDTO | undefined;
 
     if (fixCandidate) {
@@ -418,9 +428,14 @@ export async function buildApp(database?: DatabaseType): Promise<FastifyInstance
         | undefined;
 
       if (patch) {
+        patchReplay = db.prepare('SELECT * FROM patch_replays WHERE patch_id = ? LIMIT 1').get(patch.id) as
+          | PatchReplayDTO
+          | undefined;
         reviewDecision = stmts.getReviewDecisionByPatchId.get(patch.id) as ReviewDecisionDTO | undefined;
       }
     }
+
+    const replay = patchReplay ? parseReplayBundle(patchReplay.replay_bundle) : null;
 
     return {
       ...cycle,
@@ -433,6 +448,15 @@ export async function buildApp(database?: DatabaseType): Promise<FastifyInstance
       patch: patch?.patch_text ?? null,
       validation_status: patch?.validation_status ?? null,
       validation_summary: patch?.validation_summary ?? null,
+      replay: replay
+        ? {
+            patch_id: patchReplay?.patch_id ?? null,
+            scan_id: patchReplay?.scan_id ?? null,
+            source_target: patchReplay?.source_target ?? null,
+            commit_sha: patchReplay?.commit_sha ?? null,
+            ...replay,
+          }
+        : null,
       review_status: reviewDecision?.decision ?? 'pending',
       review_notes: reviewDecision?.notes ?? null,
     };

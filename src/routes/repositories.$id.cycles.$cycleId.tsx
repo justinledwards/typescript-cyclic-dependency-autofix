@@ -2,6 +2,30 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { fetchCycleDetail, type ReviewDecision, submitReviewDecision } from '../lib/api';
 
+type ReplayBundle = {
+  source_target?: string | null;
+  commit_sha?: string | null;
+  repository?: {
+    owner?: string;
+    name?: string;
+    local_path?: string | null;
+  };
+  candidate?: {
+    classification?: string;
+    confidence?: number;
+    reasons?: string[] | null;
+  };
+  validation?: {
+    status?: string;
+    summary?: string;
+  };
+  file_snapshots?: Array<{
+    path: string;
+    before: string;
+    after: string;
+  }>;
+};
+
 export const Route = createFileRoute('/repositories/$id/cycles/$cycleId')({
   component: CycleDetail,
 });
@@ -41,6 +65,7 @@ function CycleDetail() {
   let statusColor = 'text-gray-800';
   if (cycle?.validation_status === 'passed') statusColor = 'text-green-600';
   if (cycle?.validation_status === 'failed') statusColor = 'text-red-600';
+  const replay = cycle?.replay as ReplayBundle | null | undefined;
 
   const canReview = Boolean(cycle?.patch_id);
 
@@ -114,6 +139,72 @@ function CycleDetail() {
                 )}
               </div>
             </div>
+          </div>
+
+          <div className="bg-white p-6 rounded-lg border border-gray-200 shadow-sm">
+            <h2 className="text-xl font-semibold mb-4">Replay Provenance</h2>
+            {replay ? (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <span className="text-gray-500 block text-sm">Source Target</span>
+                    <span className="font-medium break-all">{replay.source_target || 'N/A'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block text-sm">Commit SHA</span>
+                    <span className="font-medium font-mono break-all">{replay.commit_sha || 'N/A'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block text-sm">Repository</span>
+                    <span className="font-medium">
+                      {replay.repository?.owner && replay.repository?.name
+                        ? `${replay.repository.owner}/${replay.repository.name}`
+                        : 'N/A'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block text-sm">Repository Path</span>
+                    <span className="font-medium break-all">{replay.repository?.local_path || 'N/A'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block text-sm">Classification</span>
+                    <span className="font-medium">
+                      {replay.candidate?.classification || String(cycle.classification || 'Unknown')}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block text-sm">Validation</span>
+                    <span className={`font-medium ${statusColor}`}>
+                      {replay.validation?.status || cycle.validation_status || 'Pending / N/A'}
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <span className="text-gray-500 block text-sm mb-2">
+                    File Snapshots ({replay.file_snapshots?.length || 0})
+                  </span>
+                  {replay.file_snapshots?.length ? (
+                    <pre className="bg-gray-50 p-4 rounded-md overflow-x-auto text-xs font-mono border border-gray-200 max-h-72 overflow-y-auto">
+                      <code>{JSON.stringify(replay.file_snapshots, null, 2)}</code>
+                    </pre>
+                  ) : (
+                    <p className="text-gray-500 italic text-sm">No file snapshots available.</p>
+                  )}
+                </div>
+
+                {replay.validation?.summary ? (
+                  <div>
+                    <span className="text-gray-500 block text-sm mb-2">Validation Summary</span>
+                    <pre className="bg-gray-50 p-4 rounded-md overflow-x-auto text-xs font-mono border border-gray-200 max-h-56 overflow-y-auto">
+                      <code>{replay.validation.summary}</code>
+                    </pre>
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <p className="text-gray-500 italic text-sm">No replay bundle stored for this patch yet.</p>
+            )}
           </div>
 
           <div className="bg-white p-6 rounded-lg border border-gray-200 shadow-sm">

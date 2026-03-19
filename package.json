@@ -21,6 +21,7 @@
     "scan": "tsx cli/index.ts scan",
     "scan:all": "tsx cli/index.ts scan:all",
     "retry:failed": "tsx cli/index.ts retry:failed",
+    "create:pr": "tsx cli/index.ts create:pr",
     "export:patches": "tsx cli/index.ts export:patches",
     "prepare": "husky"
   },

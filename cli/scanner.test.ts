@@ -1,5 +1,5 @@
-import path from 'node:path';
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import simpleGit from 'simple-git';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { analyzeRepository } from '../analyzer/analyzer.js';
@@ -47,6 +47,7 @@ vi.mock('../db/index.js', async () => {
 });
 
 describe('Scanner Worker', () => {
+  const absolutePath = path.join(process.cwd(), '.test-fixtures', 'dify-autofix-test');
   let mockGit: Record<string, ReturnType<typeof vi.fn>>;
 
   beforeEach(() => {
@@ -199,7 +200,6 @@ describe('Scanner Worker', () => {
       },
     ]);
 
-    const absolutePath = '/tmp/dify-autofix-test';
     const result = await scanRepository(absolutePath);
 
     expect(result.repoPath).toBe(path.resolve(absolutePath));
@@ -279,7 +279,10 @@ describe('Scanner Worker', () => {
     const result = await scanRepository('org/patch');
     const cycles = dbModule.getCyclesByScanId.all(result.scanId) as Array<{ id: number }>;
     const candidates = dbModule.getFixCandidatesByCycleId.all(cycles[0].id) as Array<{ id: number }>;
-    const patches = dbModule.getPatchesByFixCandidateId.all(candidates[0].id) as Array<{ id: number; patch_text: string }>;
+    const patches = dbModule.getPatchesByFixCandidateId.all(candidates[0].id) as Array<{
+      id: number;
+      patch_text: string;
+    }>;
     const replay = dbModule.getPatchReplayByPatchId.get(patches[0].id) as {
       source_target: string;
       commit_sha: string;
@@ -291,6 +294,7 @@ describe('Scanner Worker', () => {
     expect(replay.source_target).toBe('org/patch');
     expect(replay.commit_sha).toBe('mock-sha');
     expect(JSON.parse(replay.replay_bundle).file_snapshots).toHaveLength(1);
+    expect(JSON.parse(replay.replay_bundle).repository.remote_url).toBe('https://github.com/org/patch.git');
   });
 
   it('persists failed validation summaries when a generated patch does not validate', async () => {

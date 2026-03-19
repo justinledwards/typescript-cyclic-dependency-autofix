@@ -246,6 +246,90 @@ describe('backend API', () => {
       expect(findings[0].cycle_path).toEqual(['a.ts', 'b.ts']);
     });
 
+    it('GET /api/findings filters by repository, classification, validation, review, cycle size, and search', async () => {
+      const stmts = createStatements(testDb);
+      const repoInfo = stmts.addRepository.run({
+        owner: 'acme',
+        name: 'widget',
+        default_branch: null,
+        local_path: null,
+      });
+      const scanInfo = stmts.addScan.run({
+        repository_id: repoInfo.lastInsertRowid,
+        commit_sha: 'queue1',
+        status: 'completed',
+      });
+      const matchingCycle = stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        participating_files: JSON.stringify(['a.ts', 'b.ts']),
+        raw_payload: null,
+      });
+      const matchingCandidate = stmts.addFixCandidate.run({
+        cycle_id: matchingCycle.lastInsertRowid,
+        classification: 'autofix_extract_shared',
+        confidence: 0.98,
+        reasons: JSON.stringify(['safe top-level function']),
+      });
+      const matchingPatch = stmts.addPatch.run({
+        fix_candidate_id: matchingCandidate.lastInsertRowid,
+        patch_text: '--- a.ts\n+++ b.ts',
+        touched_files: JSON.stringify(['a.ts', 'b.ts']),
+        validation_status: 'passed',
+        validation_summary: 'Validation passed.',
+      });
+      stmts.addReviewDecision.run({
+        patch_id: matchingPatch.lastInsertRowid,
+        decision: 'approved',
+        notes: 'Ship it',
+      });
+
+      stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'x.ts -> y.ts -> x.ts',
+        participating_files: JSON.stringify(['x.ts', 'y.ts', 'x.ts']),
+        raw_payload: null,
+      });
+      const otherCycle = stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'm.ts -> n.ts -> m.ts',
+        participating_files: JSON.stringify(['m.ts', 'n.ts', 'm.ts']),
+        raw_payload: null,
+      });
+      const otherCandidate = stmts.addFixCandidate.run({
+        cycle_id: otherCycle.lastInsertRowid,
+        classification: 'autofix_import_type',
+        confidence: 0.74,
+        reasons: null,
+      });
+      const otherPatch = stmts.addPatch.run({
+        fix_candidate_id: otherCandidate.lastInsertRowid,
+        patch_text: 'other diff',
+        touched_files: JSON.stringify(['m.ts', 'n.ts']),
+        validation_status: 'failed',
+        validation_summary: 'TypeScript check failed.',
+      });
+      stmts.addReviewDecision.run({
+        patch_id: otherPatch.lastInsertRowid,
+        decision: 'pr_candidate',
+        notes: null,
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/findings?repository_id=${repoInfo.lastInsertRowid}&classification=autofix_extract_shared&validation_status=passed&review_status=approved&cycle_size=2&search=acme/widget`,
+      });
+      expect(response.statusCode).toBe(200);
+      const findings = response.json();
+      expect(findings).toHaveLength(1);
+      expect(findings[0].repository_id).toBe(repoInfo.lastInsertRowid);
+      expect(findings[0].classification).toBe('autofix_extract_shared');
+      expect(findings[0].validation_status).toBe('passed');
+      expect(findings[0].review_status).toBe('approved');
+      expect(findings[0].cycle_size).toBe(2);
+      expect(findings[0].cycle_path).toEqual(['a.ts', 'b.ts']);
+    });
+
     it('GET /api/repositories/:id/findings filters by status', async () => {
       const stmts = createStatements(testDb);
       const repoInfo = stmts.addRepository.run({
@@ -354,6 +438,7 @@ describe('backend API', () => {
       expect(detail.confidence).toBe(0.85);
       expect(detail.reasons).toEqual(['type-only import']);
       expect(detail.patch).toContain('--- a/p.ts');
+      expect(detail.patch_id).toBeDefined();
       expect(detail.review_status).toBe('approved');
     });
 
@@ -544,6 +629,61 @@ describe('backend API', () => {
       });
       expect(response.statusCode).toBe(201);
       expect(response.json().decision).toBe('rejected');
+    });
+
+    it('POST /api/patches/:patchId/review updates the latest review decision', async () => {
+      const stmts = createStatements(testDb);
+      const repoInfo = stmts.addRepository.run({
+        owner: 'rev-update',
+        name: 'repo',
+        default_branch: null,
+        local_path: null,
+      });
+      const scanInfo = stmts.addScan.run({
+        repository_id: repoInfo.lastInsertRowid,
+        commit_sha: 'rev3',
+        status: 'completed',
+      });
+      const cycleInfo = stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'u->v',
+        participating_files: '[]',
+        raw_payload: null,
+      });
+      const fcInfo = stmts.addFixCandidate.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        classification: 'autofix_extract_shared',
+        confidence: 0.9,
+        reasons: null,
+      });
+      const patchInfo = stmts.addPatch.run({
+        fix_candidate_id: fcInfo.lastInsertRowid,
+        patch_text: 'diff',
+        touched_files: '[]',
+        validation_status: 'passed',
+        validation_summary: null,
+      });
+
+      await app.inject({
+        method: 'POST',
+        url: `/api/patches/${patchInfo.lastInsertRowid}/review`,
+        payload: { decision: 'approved' },
+      });
+
+      const updateResponse = await app.inject({
+        method: 'POST',
+        url: `/api/patches/${patchInfo.lastInsertRowid}/review`,
+        payload: { decision: 'rejected', notes: 'Needs more work' },
+      });
+      expect(updateResponse.statusCode).toBe(201);
+
+      const detailResponse = await app.inject({
+        method: 'GET',
+        url: `/api/repositories/${repoInfo.lastInsertRowid}/cycles/${cycleInfo.lastInsertRowid}`,
+      });
+      expect(detailResponse.statusCode).toBe(200);
+      expect(detailResponse.json().review_status).toBe('rejected');
+      expect(detailResponse.json().review_notes).toBe('Needs more work');
     });
   });
 

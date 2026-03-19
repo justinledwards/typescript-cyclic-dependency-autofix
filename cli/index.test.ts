@@ -1,9 +1,22 @@
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { exportApprovedPatches } from './exportPatches.js';
 import { createProgram } from './index.js';
 import { scanRepository } from './scanner.js';
 
+const exportedDir = path.join(os.tmpdir(), 'patches');
+
 vi.mock('./scanner.js', () => ({
   scanRepository: vi.fn().mockResolvedValue({ scanId: 999, cyclesFound: 2 }),
+}));
+
+vi.mock('./exportPatches.js', () => ({
+  exportApprovedPatches: vi.fn().mockResolvedValue({
+    outputDir: path.join(os.tmpdir(), 'patches'),
+    exportedCount: 2,
+    files: [path.join(os.tmpdir(), 'patches', 'a.patch'), path.join(os.tmpdir(), 'patches', 'b.patch')],
+  }),
 }));
 
 describe('CLI', () => {
@@ -27,7 +40,7 @@ describe('CLI', () => {
 
   it('scan command catches errors and exits', async () => {
     const consoleErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as any);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined as never) as typeof process.exit);
 
     // override mock to throw
     vi.mocked(scanRepository).mockRejectedValueOnce(new Error('Scanner error'));
@@ -66,14 +79,15 @@ describe('CLI', () => {
     consoleSpy.mockRestore();
   });
 
-  it('export:patches command logs export message', () => {
+  it('export:patches command logs export message', async () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const program = createProgram();
     program.exitOverride();
 
-    program.parse(['export:patches'], { from: 'user' });
+    await program.parseAsync(['node', 'test', 'export:patches']);
 
-    expect(consoleSpy).toHaveBeenCalledWith('Exporting approved patch files...');
+    expect(consoleSpy).toHaveBeenCalledWith(`Exported 2 patch file(s) to ${exportedDir}`);
+    expect(vi.mocked(exportApprovedPatches)).toHaveBeenCalled();
     consoleSpy.mockRestore();
   });
 

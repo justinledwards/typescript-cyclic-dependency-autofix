@@ -451,6 +451,28 @@ describe('db module', () => {
       expect(decision.notes).toBe('Looks good to me');
     });
 
+    it('updates the existing review decision for a patch', () => {
+      stmts.addReviewDecision.run({
+        patch_id: patchId,
+        decision: 'approved',
+        notes: 'Looks good to me',
+      });
+      stmts.addReviewDecision.run({
+        patch_id: patchId,
+        decision: 'rejected',
+        notes: 'Needs more work',
+      });
+
+      const decisions = db
+        .prepare('SELECT * FROM review_decisions WHERE patch_id = ?')
+        .all(patchId) as ReviewDecisionDTO[];
+      expect(decisions).toHaveLength(1);
+
+      const decision = stmts.getReviewDecisionByPatchId.get(patchId) as ReviewDecisionDTO;
+      expect(decision.decision).toBe('rejected');
+      expect(decision.notes).toBe('Needs more work');
+    });
+
     it('handles null notes', () => {
       stmts.addReviewDecision.run({
         patch_id: patchId,

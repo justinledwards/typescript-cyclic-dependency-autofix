@@ -14,6 +14,225 @@ import {
   type ReviewDecisionDTO,
 } from '../db/index.js';
 
+interface FindingsFilters {
+  repositoryId?: number;
+  classification?: string;
+  validationStatus?: string;
+  reviewStatus?: string;
+  cycleSize?: number;
+  search?: string;
+}
+
+interface FindingsQueryRow {
+  cycle_id: number;
+  scan_id: number;
+  normalized_path: string;
+  participating_files: string;
+  raw_payload: string | null;
+  fix_candidate_id: number | null;
+  classification: string | null;
+  confidence: number | null;
+  reasons: string | null;
+  patch_id: number | null;
+  patch_text: string | null;
+  validation_status: string | null;
+  validation_summary: string | null;
+  review_status: string | null;
+  review_notes: string | null;
+  repository_id: number;
+  owner: string;
+  name: string;
+  commit_sha: string;
+  cycle_size: number;
+}
+
+function parseJsonArray(value: string | null): string[] {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseJsonValue<T>(value: string | null, fallback: T): T {
+  if (!value) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function toOptionalNumber(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function buildFindingsQuery(filters: FindingsFilters): { query: string; params: unknown[] } {
+  const queryParts = [
+    `
+    SELECT
+      c.id AS cycle_id,
+      c.scan_id,
+      c.normalized_path,
+      c.participating_files,
+      c.raw_payload,
+      fc.id AS fix_candidate_id,
+      fc.classification,
+      fc.confidence,
+      fc.reasons,
+      p.id AS patch_id,
+      p.patch_text,
+      p.validation_status,
+      p.validation_summary,
+      rd.decision AS review_status,
+      rd.notes AS review_notes,
+      r.id AS repository_id,
+      r.owner,
+      r.name,
+      s.commit_sha,
+      CASE
+        WHEN json_valid(c.participating_files) THEN json_array_length(c.participating_files)
+        ELSE 0
+      END AS cycle_size
+    FROM cycles c
+    INNER JOIN scans s ON s.id = c.scan_id
+    INNER JOIN repositories r ON r.id = s.repository_id
+    LEFT JOIN fix_candidates fc ON fc.cycle_id = c.id
+    LEFT JOIN patches p ON p.fix_candidate_id = fc.id
+    LEFT JOIN review_decisions rd ON rd.id = (
+      SELECT id
+      FROM review_decisions
+      WHERE patch_id = p.id
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    )
+    WHERE 1 = 1
+      AND c.scan_id = (
+        SELECT id
+        FROM scans
+        WHERE repository_id = r.id
+        ORDER BY started_at DESC, id DESC
+        LIMIT 1
+      )
+  `,
+  ];
+
+  const params: unknown[] = [];
+
+  appendRepositoryFilter(queryParts, params, filters.repositoryId);
+  appendSearchFilter(queryParts, params, filters.search);
+  appendClassificationFilter(queryParts, params, filters.classification);
+  appendValidationStatusFilter(queryParts, params, filters.validationStatus);
+  appendReviewStatusFilter(queryParts, params, filters.reviewStatus);
+  appendCycleSizeFilter(queryParts, params, filters.cycleSize);
+
+  queryParts.push(`
+    ORDER BY COALESCE(fc.confidence, 0) DESC, r.owner ASC, r.name ASC, c.id ASC
+  `);
+
+  return { query: queryParts.join(''), params };
+}
+
+function appendRepositoryFilter(query: string[], params: unknown[], repositoryId?: number): void {
+  if (repositoryId === undefined) {
+    return;
+  }
+
+  query.push(' AND r.id = ?');
+  params.push(repositoryId);
+}
+
+function appendSearchFilter(query: string[], params: unknown[], search?: string): void {
+  const trimmedSearch = search?.trim();
+  if (!trimmedSearch) {
+    return;
+  }
+
+  query.push(" AND LOWER(r.owner || '/' || r.name || ' ' || c.normalized_path) LIKE ?");
+  params.push(`%${trimmedSearch.toLowerCase()}%`);
+}
+
+function appendClassificationFilter(query: string[], params: unknown[], classification?: string): void {
+  if (!classification || classification === 'all') {
+    return;
+  }
+
+  if (classification === 'unclassified') {
+    query.push(' AND fc.id IS NULL');
+    return;
+  }
+
+  query.push(' AND fc.classification = ?');
+  params.push(classification);
+}
+
+function appendValidationStatusFilter(query: string[], params: unknown[], validationStatus?: string): void {
+  if (!validationStatus || validationStatus === 'all') {
+    return;
+  }
+
+  if (validationStatus === 'pending') {
+    query.push(' AND p.validation_status IS NULL');
+    return;
+  }
+
+  query.push(' AND p.validation_status = ?');
+  params.push(validationStatus);
+}
+
+function appendReviewStatusFilter(query: string[], params: unknown[], reviewStatus?: string): void {
+  if (!reviewStatus || reviewStatus === 'all') {
+    return;
+  }
+
+  if (reviewStatus === 'pending') {
+    query.push(' AND rd.decision IS NULL');
+    return;
+  }
+
+  query.push(' AND rd.decision = ?');
+  params.push(reviewStatus);
+}
+
+function appendCycleSizeFilter(query: string[], params: unknown[], cycleSize?: number): void {
+  if (cycleSize === undefined) {
+    return;
+  }
+
+  query.push(`
+    AND CASE
+      WHEN json_valid(c.participating_files) THEN json_array_length(c.participating_files)
+      ELSE 0
+    END = ?
+  `);
+  params.push(cycleSize);
+}
+
+function mapFindingRows(rows: FindingsQueryRow[]) {
+  return rows.map((row) => ({
+    ...row,
+    cycle_path: parseJsonArray(row.participating_files),
+    raw_payload: parseJsonValue(row.raw_payload, null),
+    reasons: parseJsonValue(row.reasons, null),
+    validation_status: row.validation_status ?? 'pending',
+    review_status: row.review_status ?? 'pending',
+    status: row.review_status ?? 'pending',
+  }));
+}
+
 /**
  * Build and configure the Fastify app.
  * Accepts an optional database instance for testing (defaults to the production DB).
@@ -127,51 +346,51 @@ export async function buildApp(database?: DatabaseType): Promise<FastifyInstance
     return stmts.getCyclesByScanId.all(Number(request.params.scanId));
   });
 
+  fastify.get<{
+    Querystring: {
+      repository_id?: string;
+      search?: string;
+      classification?: string;
+      validation_status?: string;
+      review_status?: string;
+      cycle_size?: string;
+    };
+  }>('/api/findings', async (request) => {
+    const { query, params } = buildFindingsQuery({
+      repositoryId: toOptionalNumber(request.query.repository_id),
+      search: request.query.search,
+      classification: request.query.classification,
+      validationStatus: request.query.validation_status,
+      reviewStatus: request.query.review_status,
+      cycleSize: toOptionalNumber(request.query.cycle_size),
+    });
+
+    const rows = db.prepare(query).all(...params) as FindingsQueryRow[];
+    return mapFindingRows(rows);
+  });
+
   // Combined findings view: cycles + fix candidates for a repository
   fastify.get<{
     Params: { id: string };
-    Querystring: { status?: string };
+    Querystring: {
+      search?: string;
+      classification?: string;
+      validation_status?: string;
+      review_status?: string;
+      cycle_size?: string;
+    };
   }>('/api/repositories/:id/findings', async (request) => {
-    const repoId = Number(request.params.id);
-    const statusFilter = request.query.status;
+    const { query, params } = buildFindingsQuery({
+      repositoryId: toOptionalNumber(request.params.id),
+      search: request.query.search,
+      classification: request.query.classification,
+      validationStatus: request.query.validation_status,
+      reviewStatus: request.query.review_status,
+      cycleSize: toOptionalNumber(request.query.cycle_size),
+    });
 
-    // Get the latest scan for this repo
-    const latestScan = db
-      .prepare('SELECT * FROM scans WHERE repository_id = ? ORDER BY started_at DESC LIMIT 1')
-      .get(repoId) as { id: number } | undefined;
-
-    if (!latestScan) return [];
-
-    let query = `
-      SELECT
-        c.id,
-        c.normalized_path,
-        c.participating_files,
-        fc.classification,
-        fc.confidence,
-        rd.decision as status
-      FROM cycles c
-      LEFT JOIN fix_candidates fc ON fc.cycle_id = c.id
-      LEFT JOIN patches p ON p.fix_candidate_id = fc.id
-      LEFT JOIN review_decisions rd ON rd.patch_id = p.id
-      WHERE c.scan_id = ?
-    `;
-
-    const params: unknown[] = [latestScan.id];
-
-    if (statusFilter && statusFilter !== 'all') {
-      query += " AND (rd.decision = ? OR (rd.decision IS NULL AND ? = 'pending'))";
-      params.push(statusFilter, statusFilter);
-    }
-
-    query += ' ORDER BY fc.confidence DESC';
-
-    const rows = db.prepare(query).all(...params) as Record<string, unknown>[];
-
-    return rows.map((row) => ({
-      ...row,
-      cycle_path: row.participating_files ? JSON.parse(row.participating_files as string) : [],
-    }));
+    const rows = db.prepare(query).all(...params) as FindingsQueryRow[];
+    return mapFindingRows(rows);
   });
 
   // Cycle detail with patch
@@ -205,15 +424,17 @@ export async function buildApp(database?: DatabaseType): Promise<FastifyInstance
 
     return {
       ...cycle,
-      cycle_path: cycle.participating_files ? JSON.parse(cycle.participating_files) : /* v8 ignore next */ [],
-      raw_payload: cycle.raw_payload ? JSON.parse(cycle.raw_payload) : /* v8 ignore next */ null,
+      patch_id: patch?.id ?? null,
+      cycle_path: parseJsonArray(cycle.participating_files),
+      raw_payload: parseJsonValue(cycle.raw_payload, null),
       classification: fixCandidate?.classification ?? null,
       confidence: fixCandidate?.confidence ?? null,
-      reasons: fixCandidate?.reasons ? JSON.parse(fixCandidate.reasons) : null,
+      reasons: parseJsonValue(fixCandidate?.reasons ?? null, null),
       patch: patch?.patch_text ?? null,
       validation_status: patch?.validation_status ?? null,
       validation_summary: patch?.validation_summary ?? null,
       review_status: reviewDecision?.decision ?? 'pending',
+      review_notes: reviewDecision?.notes ?? null,
     };
   });
 

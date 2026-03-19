@@ -202,6 +202,7 @@ async function generateDirectImportPatch(repoPath: string, plan: DirectImportFix
     touchedFiles: [...touchedFiles.keys()],
     validationStatus: 'pending',
     validationSummary: 'Generated direct-import patch candidate. Validation has not run yet.',
+    fileSnapshots: [...touchedFiles.values()],
   };
 }
 

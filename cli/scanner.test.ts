@@ -1,3 +1,4 @@
+import path from 'node:path';
 import fs from 'node:fs/promises';
 import simpleGit from 'simple-git';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -30,6 +31,7 @@ vi.mock('../db/index.js', async () => {
     addRepository: stmts.addRepository,
     getRepositoryByOwnerName: stmts.getRepositoryByOwnerName,
     updateRepositoryStatus: stmts.updateRepositoryStatus,
+    updateRepositoryLocalPath: stmts.updateRepositoryLocalPath,
     addScan: stmts.addScan,
     updateScanStatus: stmts.updateScanStatus,
     addCycle: stmts.addCycle,
@@ -52,6 +54,7 @@ describe('Scanner Worker', () => {
       clone: vi.fn(),
       fetch: vi.fn(),
       log: vi.fn().mockResolvedValue({ latest: { hash: 'mock-sha' } }),
+      getRemotes: vi.fn().mockResolvedValue([]),
     };
 
     vi.mocked(simpleGit).mockReturnValue(mockGit as unknown as ReturnType<typeof simpleGit>);
@@ -157,6 +160,51 @@ describe('Scanner Worker', () => {
     await scanRepository('https://github.com/solid/repo.git');
     const repo = dbModule.getRepositoryByOwnerName.get('solid', 'repo') as { status: string };
     expect(repo).toBeDefined();
+  });
+
+  it('uses an existing relative checkout directly', async () => {
+    vi.mocked(fs.stat).mockResolvedValue({ isDirectory: () => true } as never);
+    mockGit.getRemotes.mockResolvedValue([
+      {
+        name: 'origin',
+        refs: {
+          fetch: 'git@github.com:langgenius/dify.git',
+          push: 'git@github.com:langgenius/dify.git',
+        },
+      },
+    ]);
+
+    const result = await scanRepository('../openclaw');
+
+    expect(result.repoPath).toBe(path.resolve('../openclaw'));
+    expect(mockGit.clone).not.toHaveBeenCalled();
+    expect(mockGit.fetch).not.toHaveBeenCalled();
+
+    const repo = dbModule.getRepositoryByOwnerName.get('langgenius', 'dify') as { local_path: string };
+    expect(repo.local_path).toBe(path.resolve('../openclaw'));
+  });
+
+  it('uses an existing absolute checkout directly', async () => {
+    vi.mocked(fs.stat).mockResolvedValue({ isDirectory: () => true } as never);
+    mockGit.getRemotes.mockResolvedValue([
+      {
+        name: 'origin',
+        refs: {
+          fetch: 'https://github.com/openclaw/openclaw.git',
+          push: 'https://github.com/openclaw/openclaw.git',
+        },
+      },
+    ]);
+
+    const absolutePath = '/tmp/dify-autofix-test';
+    const result = await scanRepository(absolutePath);
+
+    expect(result.repoPath).toBe(path.resolve(absolutePath));
+    expect(mockGit.clone).not.toHaveBeenCalled();
+    expect(mockGit.fetch).not.toHaveBeenCalled();
+
+    const repo = dbModule.getRepositoryByOwnerName.get('openclaw', 'openclaw') as { local_path: string };
+    expect(repo.local_path).toBe(path.resolve(absolutePath));
   });
 
   it('handles bare names', async () => {

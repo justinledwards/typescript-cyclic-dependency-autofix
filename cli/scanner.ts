@@ -50,7 +50,8 @@ function parseTargetUrl(targetUrlOrOwnerName: string) {
 }
 
 export async function scanRepository(targetUrlOrOwnerName: string, worktreesDir = './worktrees') {
-  const resolvedTarget = await resolveScanTarget(targetUrlOrOwnerName, worktreesDir);
+  const resolvedWorktreesDir = path.resolve(worktreesDir);
+  const resolvedTarget = await resolveScanTarget(targetUrlOrOwnerName, resolvedWorktreesDir);
   const { owner, name } = resolvedTarget;
 
   const repo = ensureRepository(owner, name, resolvedTarget.localPath);
@@ -58,14 +59,13 @@ export async function scanRepository(targetUrlOrOwnerName: string, worktreesDir 
   updateRepositoryStatus.run({ id: repo.id, status: 'scanning' });
 
   if (!resolvedTarget.localPath) {
-    await fs.mkdir(worktreesDir, { recursive: true });
+    await fs.mkdir(resolvedWorktreesDir, { recursive: true });
 
     updateRepositoryStatus.run({ id: repo.id, status: 'downloading' });
     const git = simpleGit();
-    const gitRepo = simpleGit(resolvedTarget.repoPath);
 
     try {
-      await syncRepositoryClone(git, gitRepo, resolvedTarget);
+      await syncRepositoryClone(git, resolvedTarget);
     } catch (error) {
       updateRepositoryStatus.run({ id: repo.id, status: 'clone_failed' });
       throw error;
@@ -180,7 +180,6 @@ async function resolveScanTarget(
 
 async function syncRepositoryClone(
   git: ReturnType<typeof simpleGit>,
-  gitRepo: ReturnType<typeof simpleGit>,
   target: {
     owner: string;
     name: string;
@@ -190,6 +189,7 @@ async function syncRepositoryClone(
   },
 ): Promise<void> {
   if (await hasClonedRepo(target.repoPath)) {
+    const gitRepo = simpleGit(target.repoPath);
     await gitRepo.fetch();
     return;
   }

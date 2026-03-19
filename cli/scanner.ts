@@ -4,7 +4,6 @@ import simpleGit from 'simple-git';
 import { analyzeRepository } from '../analyzer/analyzer.js';
 import type { GeneratedPatch } from '../codemod/generatePatch.js';
 import { generatePatchForCycle } from '../codemod/generatePatch.js';
-import { validateGeneratedPatch, type ValidationResult } from './validation.js';
 import type { RepositoryDTO } from '../db/index.js';
 import {
   addCycle,
@@ -19,8 +18,11 @@ import {
   updateRepositoryStatus,
   updateScanStatus,
 } from '../db/index.js';
+import { type ValidationResult, validateGeneratedPatch } from './validation.js';
 
 type ScannedCycle = Awaited<ReturnType<typeof analyzeRepository>>[number];
+const GITHUB_HOST = 'github.com';
+const UNKNOWN_REPO = 'unknown-repo';
 
 function parseTargetUrl(targetUrlOrOwnerName: string) {
   let owner = 'unknown';
@@ -31,18 +33,18 @@ function parseTargetUrl(targetUrlOrOwnerName: string) {
     return githubPath;
   }
 
-  if (targetUrlOrOwnerName.includes('github.com')) {
+  if (targetUrlOrOwnerName.includes(GITHUB_HOST)) {
     const withoutHttps = targetUrlOrOwnerName.replace('https://', '').replace('http://', '');
-    const parts = withoutHttps.replace('.git', '').split('github.com/');
+    const parts = withoutHttps.replace('.git', '').split(`${GITHUB_HOST}/`);
     if (parts.length > 1) {
       const pathParts = parts[1].split('/');
       owner = pathParts[0];
-      name = pathParts[1] || 'unknown-repo';
+      name = pathParts[1] || UNKNOWN_REPO;
     }
   } else if (targetUrlOrOwnerName.includes('/')) {
     const parts = targetUrlOrOwnerName.split('/');
     owner = parts[0];
-    name = parts[1] || 'unknown-repo';
+    name = parts[1] || UNKNOWN_REPO;
   }
   return { owner, name };
 }
@@ -86,7 +88,15 @@ export async function scanRepository(targetUrlOrOwnerName: string, worktreesDir 
     const cycles = await analyzeRepository(resolvedTarget.repoPath);
 
     for (const cycle of cycles) {
-      await persistCycle(scanId, resolvedTarget.repoPath, targetUrlOrOwnerName, commitSha, repo, cycle);
+      await persistCycle(
+        scanId,
+        resolvedTarget.repoPath,
+        targetUrlOrOwnerName,
+        commitSha,
+        resolvedTarget.remoteUrl,
+        repo,
+        cycle,
+      );
     }
 
     updateScanStatus.run({ id: scanId, status: 'completed' });
@@ -126,38 +136,45 @@ function ensureRepository(owner: string, name: string, localPath: string | null)
   return { id: info.lastInsertRowid as number, owner, name } as RepositoryDTO;
 }
 
-async function resolveScanTarget(targetUrlOrOwnerName: string, worktreesDir: string): Promise<{
+async function resolveScanTarget(
+  targetUrlOrOwnerName: string,
+  worktreesDir: string,
+): Promise<{
   owner: string;
   name: string;
   repoPath: string;
   localPath: string | null;
   cloneUrl: string | null;
+  remoteUrl: string | null;
 }> {
-  const looksLikeRemoteTarget = targetUrlOrOwnerName.includes('github.com') || targetUrlOrOwnerName.includes('://');
+  const looksLikeRemoteTarget = targetUrlOrOwnerName.includes(GITHUB_HOST) || targetUrlOrOwnerName.includes('://');
   if (!looksLikeRemoteTarget) {
     const localPath = path.resolve(targetUrlOrOwnerName);
     if (await hasExistingDirectory(localPath)) {
-      const { owner, name } = await resolveLocalRepositoryIdentity(localPath);
+      const { owner, name, remoteUrl } = await resolveLocalRepositoryIdentity(localPath);
       return {
         owner,
         name,
         repoPath: localPath,
         localPath,
         cloneUrl: null,
+        remoteUrl,
       };
     }
   }
 
   const { owner, name } = parseTargetUrl(targetUrlOrOwnerName);
+  const cloneUrl =
+    targetUrlOrOwnerName.includes(GITHUB_HOST) || !targetUrlOrOwnerName.includes('/')
+      ? targetUrlOrOwnerName
+      : resolveCloneUrl(owner, name);
   return {
     owner,
     name,
     repoPath: path.join(worktreesDir, `${owner}-${name}`),
     localPath: null,
-    cloneUrl:
-      targetUrlOrOwnerName.includes('github.com') || !targetUrlOrOwnerName.includes('/')
-        ? targetUrlOrOwnerName
-        : resolveCloneUrl(owner, name),
+    cloneUrl,
+    remoteUrl: normalizeRemoteUrl(cloneUrl, owner, name),
   };
 }
 
@@ -193,7 +210,11 @@ async function hasExistingDirectory(repoPath: string): Promise<boolean> {
   return hasClonedRepo(repoPath);
 }
 
-async function resolveLocalRepositoryIdentity(localPath: string): Promise<{ owner: string; name: string }> {
+async function resolveLocalRepositoryIdentity(localPath: string): Promise<{
+  owner: string;
+  name: string;
+  remoteUrl: string | null;
+}> {
   const git = simpleGit(localPath);
 
   try {
@@ -204,15 +225,15 @@ async function resolveLocalRepositoryIdentity(localPath: string): Promise<{ owne
     if (remoteUrl) {
       const parsedRemote = parseGithubPath(remoteUrl);
       if (parsedRemote) {
-        return parsedRemote;
+        return { ...parsedRemote, remoteUrl };
       }
     }
   } catch {
     // Fall back to a local-only identity below.
   }
 
-  const baseName = path.basename(localPath).replace(/\.git$/, '') || 'unknown-repo';
-  return { owner: 'local', name: baseName };
+  const baseName = path.basename(localPath).replace(/\.git$/, '') || UNKNOWN_REPO;
+  return { owner: 'local', name: baseName, remoteUrl: null };
 }
 
 function resolveCloneUrl(owner: string, name: string): string {
@@ -226,13 +247,11 @@ function parseGithubPath(input: string): { owner: string; name: string } | null 
     .replace(/^ssh:\/\//, '')
     .replace(/^git@/, '');
 
-  if (!normalized.includes('github.com')) {
+  if (!normalized.includes(GITHUB_HOST)) {
     return null;
   }
 
-  const githubPath = normalized
-    .replace(/^github\.com[/:]/, '')
-    .replace(/^github\.com$/, '');
+  const githubPath = normalized.replace(/^github\.com[/:]/, '').replace(/^github\.com$/, '');
 
   if (!githubPath) {
     return null;
@@ -243,7 +262,7 @@ function parseGithubPath(input: string): { owner: string; name: string } | null 
     return null;
   }
 
-  return { owner, name: name || 'unknown-repo' };
+  return { owner, name: name || UNKNOWN_REPO };
 }
 
 async function getLatestCommitSha(gitRepo: ReturnType<typeof simpleGit>): Promise<string> {
@@ -260,6 +279,7 @@ async function persistCycle(
   repoPath: string,
   sourceTarget: string,
   commitSha: string,
+  remoteUrl: string | null,
   repository: RepositoryDTO,
   cycle: ScannedCycle,
 ): Promise<void> {
@@ -298,23 +318,23 @@ async function persistCycle(
     scanId,
     sourceTarget,
     commitSha,
+    remoteUrl,
     repository,
     cycle,
     generatedPatch,
     validation,
   });
 
-  getDb()
-    .transaction((patchRow: typeof patchPayload, replayBundleJson: string) => {
-      const patchInfo = addPatch.run(patchRow);
-      addPatchReplay.run({
-        patch_id: patchInfo.lastInsertRowid as number,
-        scan_id: scanId,
-        source_target: sourceTarget,
-        commit_sha: commitSha,
-        replay_bundle: replayBundleJson,
-      });
-    })(patchPayload, JSON.stringify(replayBundle));
+  getDb().transaction((patchRow: typeof patchPayload, replayBundleJson: string) => {
+    const patchInfo = addPatch.run(patchRow);
+    addPatchReplay.run({
+      patch_id: patchInfo.lastInsertRowid as number,
+      scan_id: scanId,
+      source_target: sourceTarget,
+      commit_sha: commitSha,
+      replay_bundle: replayBundleJson,
+    });
+  })(patchPayload, JSON.stringify(replayBundle));
 }
 
 interface PatchReplayBundle {
@@ -326,6 +346,7 @@ interface PatchReplayBundle {
     name: string;
     default_branch: string | null;
     local_path: string | null;
+    remote_url: string | null;
   };
   cycle: {
     path: string[];
@@ -346,6 +367,7 @@ function buildPatchReplayBundle(args: {
   scanId: number;
   sourceTarget: string;
   commitSha: string;
+  remoteUrl: string | null;
   repository: RepositoryDTO;
   cycle: ScannedCycle;
   generatedPatch: GeneratedPatch;
@@ -360,6 +382,7 @@ function buildPatchReplayBundle(args: {
       name: args.repository.name,
       default_branch: args.repository.default_branch ?? null,
       local_path: args.repository.local_path ?? null,
+      remote_url: normalizeRemoteUrl(args.remoteUrl, args.repository.owner, args.repository.name),
     },
     cycle: {
       path: args.cycle.path,
@@ -375,4 +398,20 @@ function buildPatchReplayBundle(args: {
     file_snapshots: args.generatedPatch.fileSnapshots,
     patch_text: args.generatedPatch.patchText,
   };
+}
+
+function normalizeRemoteUrl(remoteUrl: string | null, owner: string, name: string): string | null {
+  if (remoteUrl) {
+    if (parseGithubPath(remoteUrl)) {
+      return remoteUrl;
+    }
+
+    return remoteUrl;
+  }
+
+  if (owner === 'local') {
+    return null;
+  }
+
+  return resolveCloneUrl(owner, name);
 }

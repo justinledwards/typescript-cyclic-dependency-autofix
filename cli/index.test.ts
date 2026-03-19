@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
 import { createProgram } from './index.js';
 import { scanRepository } from './scanner.js';
@@ -16,6 +17,19 @@ vi.mock('./exportPatches.js', () => ({
     outputDir: path.join(os.tmpdir(), 'patches'),
     exportedCount: 2,
     files: [path.join(os.tmpdir(), 'patches', 'a.patch'), path.join(os.tmpdir(), 'patches', 'b.patch')],
+  }),
+}));
+
+vi.mock('./createPullRequest.js', () => ({
+  createPullRequestForPatch: vi.fn().mockResolvedValue({
+    patchId: 12,
+    repository: 'acme/widget',
+    repoPath: path.join(process.cwd(), '.test-fixtures', 'acme-widget'),
+    branchName: 'codex/issue-42-patch-12',
+    baseBranch: 'main',
+    title: 'Break circular dependency',
+    body: 'Closes #42',
+    prUrl: 'https://github.com/acme/widget/pull/123',
   }),
 }));
 
@@ -91,12 +105,63 @@ describe('CLI', () => {
     consoleSpy.mockRestore();
   });
 
-  it('has all four subcommands registered', () => {
+  it('create:pr command creates a pull request from a stored patch', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'create:pr', '12', '--issue', '42']);
+
+    expect(vi.mocked(createPullRequestForPatch)).toHaveBeenCalledWith(12, {
+      linkedIssueNumber: 42,
+      title: undefined,
+      branchName: undefined,
+      baseBranch: undefined,
+      repoPath: undefined,
+    });
+    expect(consoleSpy).toHaveBeenCalledWith(
+      'Created PR https://github.com/acme/widget/pull/123 from branch codex/issue-42-patch-12',
+    );
+    consoleSpy.mockRestore();
+  });
+
+  it('create:pr command exits on invalid issue number', async () => {
+    const consoleErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined as never) as typeof process.exit);
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'create:pr', '12', '--issue', 'not-a-number']);
+
+    expect(consoleErrSpy).toHaveBeenCalledWith('Invalid issue number: not-a-number');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    consoleErrSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it('create:pr command exits on invalid patch id', async () => {
+    const consoleErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined as never) as typeof process.exit);
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'create:pr', 'nope', '--issue', '42']);
+
+    expect(consoleErrSpy).toHaveBeenCalledWith('Invalid patch ID: nope');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    consoleErrSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it('has all five subcommands registered', () => {
     const program = createProgram();
     const commandNames = program.commands.map((cmd) => cmd.name());
     expect(commandNames).toContain('scan');
     expect(commandNames).toContain('scan:all');
     expect(commandNames).toContain('retry:failed');
+    expect(commandNames).toContain('create:pr');
     expect(commandNames).toContain('export:patches');
   });
 });

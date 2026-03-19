@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
 import { scanRepository } from './scanner.js';
 
@@ -34,6 +35,53 @@ export function createProgram(): Command {
     .action(() => {
       console.log('Retrying failed patch candidates...');
     });
+
+  program
+    .command('create:pr <patchId>')
+    .requiredOption('--issue <number>', 'Linked issue number to close in the target repository')
+    .option('--title <title>', 'Pull request title override')
+    .option('--branch <branchName>', 'Branch name override')
+    .option('--base <branchName>', 'Base branch override')
+    .option('--repo-path <path>', 'Use an existing clean checkout instead of a scratch clone')
+    .description('Create a branch and GitHub pull request from a stored validated patch')
+    .action(
+      async (
+        patchId: string,
+        options: {
+          issue: string;
+          title?: string;
+          branch?: string;
+          base?: string;
+          repoPath?: string;
+        },
+      ) => {
+        const numericPatchId = Number(patchId);
+        if (!Number.isInteger(numericPatchId) || numericPatchId <= 0) {
+          console.error(`Invalid patch ID: ${patchId}`);
+          process.exit(1);
+        }
+
+        const linkedIssueNumber = Number(options.issue);
+        if (!Number.isInteger(linkedIssueNumber) || linkedIssueNumber <= 0) {
+          console.error(`Invalid issue number: ${options.issue}`);
+          process.exit(1);
+        }
+
+        try {
+          const result = await createPullRequestForPatch(numericPatchId, {
+            linkedIssueNumber,
+            title: options.title,
+            branchName: options.branch,
+            baseBranch: options.base,
+            repoPath: options.repoPath,
+          });
+          console.log(`Created PR ${result.prUrl} from branch ${result.branchName}`);
+        } catch (error) {
+          console.error(`Failed to create PR for patch ${patchId}:`, error);
+          process.exit(1);
+        }
+      },
+    );
 
   program
     .command('export:patches')

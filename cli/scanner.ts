@@ -3,6 +3,7 @@ import path from 'node:path';
 import simpleGit from 'simple-git';
 import { analyzeRepository } from '../analyzer/analyzer.js';
 import { generatePatchForCycle } from '../codemod/generatePatch.js';
+import { validateGeneratedPatch } from './validation.js';
 import type { RepositoryDTO } from '../db/index.js';
 import {
   addCycle,
@@ -171,11 +172,12 @@ async function persistCycle(
     return;
   }
 
+  const validation = await validateGeneratedPatch(repoPath, cycle, generatedPatch);
   addPatch.run({
     fix_candidate_id: fixCandidateInfo.lastInsertRowid as number,
     patch_text: generatedPatch.patchText,
     touched_files: JSON.stringify(generatedPatch.touchedFiles),
-    validation_status: generatedPatch.validationStatus,
-    validation_summary: generatedPatch.validationSummary,
+    validation_status: validation.status,
+    validation_summary: validation.summary,
   });
 }

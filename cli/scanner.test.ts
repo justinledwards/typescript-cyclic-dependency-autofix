@@ -5,12 +5,19 @@ import { analyzeRepository } from '../analyzer/analyzer.js';
 import { generatePatchForCycle } from '../codemod/generatePatch.js';
 import * as dbModule from '../db/index.js';
 import { scanRepository } from './scanner.js';
+import { validateGeneratedPatch } from './validation.js';
 
 vi.mock('node:fs/promises');
 vi.mock('simple-git');
 vi.mock('../analyzer/analyzer.js');
 vi.mock('../codemod/generatePatch.js', () => ({
   generatePatchForCycle: vi.fn().mockResolvedValue(null),
+}));
+vi.mock('./validation.js', () => ({
+  validateGeneratedPatch: vi.fn().mockResolvedValue({
+    status: 'passed',
+    summary: 'Validation passed.',
+  }),
 }));
 vi.mock('../db/index.js', async () => {
   const actual = await vi.importActual<typeof import('../db/index.js')>('../db/index.js');
@@ -50,6 +57,10 @@ describe('Scanner Worker', () => {
     vi.mocked(simpleGit).mockReturnValue(mockGit as unknown as ReturnType<typeof simpleGit>);
     vi.mocked(analyzeRepository).mockResolvedValue([{ type: 'circular', path: ['a.ts', 'b.ts', 'a.ts'] }]);
     vi.mocked(generatePatchForCycle).mockResolvedValue(null);
+    vi.mocked(validateGeneratedPatch).mockResolvedValue({
+      status: 'passed',
+      summary: 'Validation passed.',
+    });
 
     dbModule.getDb().prepare('DELETE FROM patches').run();
     dbModule.getDb().prepare('DELETE FROM fix_candidates').run();
@@ -205,6 +216,13 @@ describe('Scanner Worker', () => {
       touchedFiles: ['a.ts'],
       validationStatus: 'pending',
       validationSummary: 'Generated import-type patch candidate. Validation has not run yet.',
+      fileSnapshots: [
+        {
+          path: 'a.ts',
+          before: 'before',
+          after: 'after',
+        },
+      ],
     });
 
     const result = await scanRepository('org/patch');
@@ -214,5 +232,53 @@ describe('Scanner Worker', () => {
 
     expect(patches).toHaveLength(1);
     expect(patches[0].patch_text).toContain('--- a/a.ts');
+  });
+
+  it('persists failed validation summaries when a generated patch does not validate', async () => {
+    vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(analyzeRepository).mockResolvedValue([
+      {
+        type: 'circular',
+        path: ['a.ts', 'b.ts', 'a.ts'],
+        analysis: {
+          classification: 'autofix_import_type',
+          confidence: 0.9,
+          reasons: ['mock reason'],
+          plan: {
+            kind: 'import_type',
+            imports: [{ sourceFile: 'a.ts', targetFile: 'b.ts' }],
+          },
+        },
+      },
+    ]);
+    vi.mocked(generatePatchForCycle).mockResolvedValue({
+      patchText: '--- a/a.ts\n+++ b/a.ts',
+      touchedFiles: ['a.ts'],
+      validationStatus: 'pending',
+      validationSummary: 'Generated import-type patch candidate. Validation has not run yet.',
+      fileSnapshots: [
+        {
+          path: 'a.ts',
+          before: 'before',
+          after: 'after',
+        },
+      ],
+    });
+    vi.mocked(validateGeneratedPatch).mockResolvedValue({
+      status: 'failed',
+      summary: 'Validation failed: the original cycle is still present after applying the rewrite.',
+    });
+
+    const result = await scanRepository('org/invalid');
+    const cycles = dbModule.getCyclesByScanId.all(result.scanId) as Array<{ id: number }>;
+    const candidates = dbModule.getFixCandidatesByCycleId.all(cycles[0].id) as Array<{ id: number }>;
+    const patches = dbModule.getPatchesByFixCandidateId.all(candidates[0].id) as Array<{
+      validation_status: string;
+      validation_summary: string;
+    }>;
+
+    expect(patches).toHaveLength(1);
+    expect(patches[0].validation_status).toBe('failed');
+    expect(patches[0].validation_summary).toContain('original cycle is still present');
   });
 });

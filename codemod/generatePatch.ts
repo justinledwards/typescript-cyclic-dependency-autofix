@@ -13,9 +13,10 @@ export interface GeneratedPatch {
   touchedFiles: string[];
   validationStatus: string;
   validationSummary: string;
+  fileSnapshots: FileSnapshot[];
 }
 
-interface FileSnapshot {
+export interface FileSnapshot {
   path: string;
   before: string;
   after: string;
@@ -94,6 +95,7 @@ async function generateImportTypePatch(repoPath: string, plan: ImportTypeFixPlan
     touchedFiles: [...touchedFiles.keys()],
     validationStatus: 'pending',
     validationSummary: 'Generated import-type patch candidate. Validation has not run yet.',
+    fileSnapshots: [...touchedFiles.values()],
   };
 }
 
@@ -174,6 +176,7 @@ async function generateExtractSharedPatch(
     touchedFiles: snapshots.map((snapshot) => snapshot.path),
     validationStatus: 'pending',
     validationSummary: 'Generated shared-file extraction candidate. Validation has not run yet.',
+    fileSnapshots: snapshots,
   };
 }
 

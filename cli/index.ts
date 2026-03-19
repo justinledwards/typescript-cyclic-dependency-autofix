@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { exportApprovedPatches } from './exportPatches.js';
 import { scanRepository } from './scanner.js';
+import { formatSmokeSuiteResult, loadSmokeFixtures, runSmokeSuite } from './smoke.js';
 
 export function createProgram(): Command {
   const program = new Command();
@@ -42,6 +43,25 @@ export function createProgram(): Command {
     .action(async (outputDir?: string) => {
       const result = await exportApprovedPatches(outputDir);
       console.log(`Exported ${result.exportedCount} patch file(s) to ${result.outputDir}`);
+    });
+
+  program
+    .command('smoke [fixturesFile]')
+    .description('Run the smoke suite against a fixture list of real repositories')
+    .action(async (fixturesFile = './smoke.fixtures.json') => {
+      console.log(`Running smoke suite from ${fixturesFile}`);
+      try {
+        const fixtures = await loadSmokeFixtures(fixturesFile);
+        const result = await runSmokeSuite(fixtures);
+        console.log(formatSmokeSuiteResult(result));
+
+        if (result.failed > 0) {
+          process.exit(1);
+        }
+      } catch (error) {
+        console.error(`Failed to run smoke suite from ${fixturesFile}:`, error);
+        process.exit(1);
+      }
     });
 
   return program;

@@ -125,6 +125,20 @@ describe('Scanner Worker', () => {
     expect(repo).toBeDefined();
   });
 
+  it('handles github.com urls without an owner segment', async () => {
+    vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
+    await scanRepository('https://github.com//repo');
+    const repo = dbModule.getRepositoryByOwnerName.get('', 'repo') as { status: string };
+    expect(repo).toBeDefined();
+  });
+
+  it('falls back to unknown-repo when a github URL omits the repository name', async () => {
+    vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
+    await scanRepository('https://github.com/org/');
+    const repo = dbModule.getRepositoryByOwnerName.get('org', 'unknown-repo') as { status: string };
+    expect(repo).toBeDefined();
+  });
+
   it('handles bare github.com url', async () => {
     vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
     await scanRepository('github.com');
@@ -205,6 +219,66 @@ describe('Scanner Worker', () => {
 
     const repo = dbModule.getRepositoryByOwnerName.get('openclaw', 'openclaw') as { local_path: string };
     expect(repo.local_path).toBe(path.resolve(absolutePath));
+  });
+
+  it('falls back to a local-only identity when the checkout has no remotes', async () => {
+    vi.mocked(fs.stat).mockResolvedValue({ isDirectory: () => true } as never);
+    mockGit.getRemotes.mockResolvedValue([]);
+
+    const result = await scanRepository('../plain-local-repo');
+
+    expect(result.repoPath).toBe(path.resolve('../plain-local-repo'));
+    const repo = dbModule.getRepositoryByOwnerName.get('local', 'plain-local-repo') as { local_path: string };
+    expect(repo.local_path).toBe(path.resolve('../plain-local-repo'));
+  });
+
+  it('falls back to a local-only identity when remotes cannot be read', async () => {
+    vi.mocked(fs.stat).mockResolvedValue({ isDirectory: () => true } as never);
+    mockGit.getRemotes.mockRejectedValue(new Error('No remotes configured'));
+
+    const result = await scanRepository('../plain-local-repo-error');
+
+    expect(result.repoPath).toBe(path.resolve('../plain-local-repo-error'));
+    const repo = dbModule.getRepositoryByOwnerName.get('local', 'plain-local-repo-error') as { local_path: string };
+    expect(repo.local_path).toBe(path.resolve('../plain-local-repo-error'));
+  });
+
+  it('updates an existing repository record with a newly discovered local path', async () => {
+    vi.mocked(fs.stat).mockResolvedValue({ isDirectory: () => true } as never);
+    mockGit.getRemotes.mockResolvedValue([
+      {
+        name: 'origin',
+        refs: {
+          fetch: 'git@github.com:langgenius/dify.git',
+          push: 'git@github.com:langgenius/dify.git',
+        },
+      },
+    ]);
+
+    dbModule.addRepository.run({
+      owner: 'langgenius',
+      name: 'dify',
+      default_branch: 'main',
+      local_path: null,
+    });
+
+    const result = await scanRepository('../openclaw');
+
+    expect(result.repoPath).toBe(path.resolve('../openclaw'));
+    const repo = dbModule.getRepositoryByOwnerName.get('langgenius', 'dify') as { local_path: string };
+    expect(repo.local_path).toBe(path.resolve('../openclaw'));
+  });
+
+  it('falls back to an unknown commit SHA when git log fails', async () => {
+    vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
+    mockGit.clone.mockResolvedValue(undefined);
+    mockGit.log.mockResolvedValue({ latest: null } as never);
+
+    const result = await scanRepository('justin/repo');
+
+    expect(result.cyclesFound).toBe(1);
+    const scan = dbModule.getScan.get(result.scanId) as { commit_sha: string };
+    expect(scan.commit_sha).toBe('unknown');
   });
 
   it('handles bare names', async () => {

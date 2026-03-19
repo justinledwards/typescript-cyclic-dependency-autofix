@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
@@ -78,7 +79,8 @@ async function runTypecheckIfPresent(repoPath: string): Promise<{ ok: true } | {
     return { ok: true };
   }
 
-  const tscEntrypoint = path.join(process.cwd(), 'node_modules', 'typescript', 'bin', 'tsc');
+  const require = createRequire(import.meta.url);
+  const tscEntrypoint = require.resolve('typescript/bin/tsc');
 
   try {
     await execFileAsync(process.execPath, [tscEntrypoint, '--noEmit', '--project', tsconfigPath], {

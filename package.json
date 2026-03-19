@@ -22,6 +22,7 @@
     "scan:all": "tsx cli/index.ts scan:all",
     "retry:failed": "tsx cli/index.ts retry:failed",
     "export:patches": "tsx cli/index.ts export:patches",
+    "smoke": "tsx cli/index.ts smoke",
     "prepare": "husky"
   },
   "dependencies": {

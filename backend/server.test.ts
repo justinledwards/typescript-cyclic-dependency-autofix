@@ -246,6 +246,128 @@ describe('backend API', () => {
       expect(findings[0].cycle_path).toEqual(['a.ts', 'b.ts']);
     });
 
+    it('GET /api/repositories/:id/findings falls back cleanly for malformed stored JSON', async () => {
+      const stmts = createStatements(testDb);
+      const repoInfo = stmts.addRepository.run({
+        owner: 'broken',
+        name: 'json',
+        default_branch: null,
+        local_path: null,
+      });
+      const scanInfo = stmts.addScan.run({
+        repository_id: repoInfo.lastInsertRowid,
+        commit_sha: 'broken-json',
+        status: 'completed',
+      });
+      const cycleInfo = stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        participating_files: JSON.stringify({ a: 'b' }),
+        raw_payload: JSON.stringify({ ok: true }),
+      });
+      const candidateInfo = stmts.addFixCandidate.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        classification: 'autofix_extract_shared',
+        confidence: 0.9,
+        reasons: JSON.stringify(['safe']),
+      });
+      const patchInfo = stmts.addPatch.run({
+        fix_candidate_id: candidateInfo.lastInsertRowid,
+        patch_text: 'diff',
+        touched_files: JSON.stringify(['a.ts']),
+        validation_status: 'passed',
+        validation_summary: 'Validation passed.',
+      });
+
+      testDb.prepare('UPDATE cycles SET participating_files = ?, raw_payload = ? WHERE id = ?').run(
+        'not-json',
+        'also-not-json',
+        cycleInfo.lastInsertRowid,
+      );
+      testDb.prepare('UPDATE fix_candidates SET reasons = ? WHERE id = ?').run('still-not-json', candidateInfo.lastInsertRowid);
+      testDb
+        .prepare('UPDATE patches SET validation_status = NULL, validation_summary = NULL WHERE id = ?')
+        .run(patchInfo.lastInsertRowid);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/repositories/${repoInfo.lastInsertRowid}/findings`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const findings = response.json();
+      expect(findings[0].cycle_path).toEqual([]);
+      expect(findings[0].raw_payload).toBeNull();
+      expect(findings[0].reasons).toBeNull();
+      expect(findings[0].validation_status).toBe('pending');
+      expect(findings[0].review_status).toBe('pending');
+    });
+
+    it('GET /api/findings supports unclassified and pending filter modes', async () => {
+      const stmts = createStatements(testDb);
+      const repoInfo = stmts.addRepository.run({
+        owner: 'queue',
+        name: 'filters',
+        default_branch: null,
+        local_path: null,
+      });
+      const scanInfo = stmts.addScan.run({
+        repository_id: repoInfo.lastInsertRowid,
+        commit_sha: 'queue-filters',
+        status: 'completed',
+      });
+      stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'queued.ts -> queued.ts',
+        participating_files: JSON.stringify(['queued.ts', 'queued.ts']),
+        raw_payload: null,
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/findings?repository_id=${repoInfo.lastInsertRowid}&classification=unclassified&validation_status=pending&review_status=pending`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const findings = response.json();
+      expect(findings).toHaveLength(1);
+      expect(findings[0].classification).toBeNull();
+      expect(findings[0].validation_status).toBe('pending');
+      expect(findings[0].review_status).toBe('pending');
+    });
+
+    it('GET /api/findings returns all findings when repository_id is not numeric', async () => {
+      const stmts = createStatements(testDb);
+      const repoInfo = stmts.addRepository.run({
+        owner: 'global',
+        name: 'queue',
+        default_branch: null,
+        local_path: null,
+      });
+      const scanInfo = stmts.addScan.run({
+        repository_id: repoInfo.lastInsertRowid,
+        commit_sha: 'global-1',
+        status: 'completed',
+      });
+      const cycleInfo = stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'global.ts -> global.ts',
+        participating_files: JSON.stringify(['global.ts', 'global.ts']),
+        raw_payload: null,
+      });
+      stmts.addFixCandidate.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        classification: 'autofix_import_type',
+        confidence: 0.88,
+        reasons: null,
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/api/findings?repository_id=not-a-number' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toHaveLength(1);
+    });
+
     it('GET /api/findings filters by repository, classification, validation, review, cycle size, and search', async () => {
       const stmts = createStatements(testDb);
       const repoInfo = stmts.addRepository.run({

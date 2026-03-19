@@ -1,0 +1,30 @@
+[
+  {
+    "name": "openclaw",
+    "target": "../openclaw",
+    "expectations": {
+      "minCycles": 1,
+      "minClassifications": {
+        "unsupported": 1
+      }
+    }
+  },
+  {
+    "name": "dify",
+    "target": "https://github.com/langgenius/dify.git",
+    "expectations": {
+      "minCycles": 1,
+      "minClassifications": {
+        "autofix_extract_shared": 1
+      },
+      "minPatches": 1
+    }
+  },
+  {
+    "name": "jan",
+    "target": "https://github.com/janhq/jan.git",
+    "expectations": {
+      "maxCycles": 0
+    }
+  }
+]

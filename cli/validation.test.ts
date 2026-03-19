@@ -95,4 +95,121 @@ describe('validateGeneratedPatch', () => {
     expect(result.status).toBe('failed');
     expect(result.summary).toContain('original cycle is still present');
   });
+
+  it('passes when the rewrite removes the cycle and TypeScript validates cleanly', async () => {
+    const repoPath = await createRepo({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          target: 'es2022',
+          module: 'esnext',
+          noEmit: true,
+        },
+        include: ['*.ts'],
+      }),
+      'a.ts': "export const value = 1;\n",
+    });
+
+    vi.spyOn(analyzerModule, 'analyzeRepository').mockResolvedValue([]);
+
+    const generatedPatch: GeneratedPatch = {
+      patchText: 'diff',
+      touchedFiles: ['a.ts'],
+      validationStatus: 'pending',
+      validationSummary: 'pending',
+      fileSnapshots: [],
+    };
+
+    const result = await validateGeneratedPatch(
+      repoPath,
+      { type: 'circular', path: ['a.ts', 'b.ts', 'a.ts'] },
+      generatedPatch,
+    );
+
+    expect(result.status).toBe('passed');
+    expect(result.summary).toContain('Remaining cycles detected: 0');
+  });
+
+  it('fails when TypeScript validation rejects the rewritten snapshot', async () => {
+    const repoPath = await createRepo({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          target: 'es2022',
+          module: 'esnext',
+          noEmit: true,
+        },
+        include: ['*.ts'],
+      }),
+      'a.ts': "export const value: string = 'ok';\n",
+    });
+
+    vi.spyOn(analyzerModule, 'analyzeRepository').mockResolvedValue([]);
+
+    const generatedPatch: GeneratedPatch = {
+      patchText: 'diff',
+      touchedFiles: ['a.ts'],
+      validationStatus: 'pending',
+      validationSummary: 'pending',
+      fileSnapshots: [
+        {
+          path: 'a.ts',
+          before: "export const value: string = 'ok';\n",
+          after: 'export const value: string = 123;\n',
+        },
+      ],
+    };
+
+    const result = await validateGeneratedPatch(
+      repoPath,
+      { type: 'circular', path: ['a.ts', 'b.ts', 'a.ts'] },
+      generatedPatch,
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.summary).toContain('TypeScript check did not pass');
+  });
+
+  it('falls back to the spawned process error when the compiler entrypoint cannot be resolved', async () => {
+    vi.resetModules();
+    vi.doMock('../analyzer/analyzer.js', () => ({
+      analyzeRepository: vi.fn().mockResolvedValue([]),
+    }));
+    vi.doMock('node:module', () => ({
+      createRequire: () => ({
+        resolve: () => path.join(os.tmpdir(), 'missing-typescript-tsc.js'),
+      }),
+    }));
+
+    const { validateGeneratedPatch: isolatedValidateGeneratedPatch } = await import('./validation.js');
+    const repoPath = await createRepo({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          target: 'es2022',
+          module: 'esnext',
+          noEmit: true,
+        },
+        include: ['*.ts'],
+      }),
+      'a.ts': "export const value = 1;\n",
+    });
+
+    const generatedPatch: GeneratedPatch = {
+      patchText: 'diff',
+      touchedFiles: ['a.ts'],
+      validationStatus: 'pending',
+      validationSummary: 'pending',
+      fileSnapshots: [],
+    };
+
+    const result = await isolatedValidateGeneratedPatch(
+      repoPath,
+      { type: 'circular', path: ['a.ts', 'b.ts', 'a.ts'] },
+      generatedPatch,
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.summary).toContain('TypeScript check did not pass');
+  });
 });

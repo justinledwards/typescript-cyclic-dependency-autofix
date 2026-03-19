@@ -7,6 +7,7 @@ import {
   addCycle as defaultAddCycle,
   addFixCandidate as defaultAddFixCandidate,
   addPatch as defaultAddPatch,
+  addPatchReplay as defaultAddPatchReplay,
   addRepository as defaultAddRepository,
   addReviewDecision as defaultAddReviewDecision,
   addScan as defaultAddScan,
@@ -14,6 +15,7 @@ import {
   getCyclesByScanId as defaultGetCyclesByScanId,
   getFixCandidatesByCycleId as defaultGetFixCandidatesByCycleId,
   getPatch as defaultGetPatch,
+  getPatchReplayByPatchId as defaultGetPatchReplayByPatchId,
   getPatchesByFixCandidateId as defaultGetPatchesByFixCandidateId,
   getRepository as defaultGetRepository,
   getRepositoryByOwnerName as defaultGetRepositoryByOwnerName,
@@ -27,6 +29,7 @@ import {
   initDb,
   initSchema,
   type PatchDTO,
+  type PatchReplayDTO,
   type RepositoryDTO,
   type ReviewDecisionDTO,
   type ScanDTO,
@@ -67,6 +70,7 @@ describe('db module', () => {
       expect(tableNames).toContain('cycles');
       expect(tableNames).toContain('fix_candidates');
       expect(tableNames).toContain('patches');
+      expect(tableNames).toContain('patch_replays');
       expect(tableNames).toContain('review_decisions');
     });
 
@@ -84,6 +88,8 @@ describe('db module', () => {
       expect(indexNames).toContain('idx_fix_candidates_classification');
       expect(indexNames).toContain('idx_fix_candidates_confidence');
       expect(indexNames).toContain('idx_patches_fix_candidate_id');
+      expect(indexNames).toContain('idx_patch_replays_patch_id');
+      expect(indexNames).toContain('idx_patch_replays_scan_id');
       expect(indexNames).toContain('idx_review_decisions_patch_id');
       expect(indexNames).toContain('idx_review_decisions_decision');
     });
@@ -402,6 +408,93 @@ describe('db module', () => {
     });
   });
 
+  describe('patch_replays', () => {
+    let patchId: number | bigint;
+    let scanId: number | bigint;
+
+    beforeEach(() => {
+      const repoInfo = stmts.addRepository.run({
+        owner: 'replay-test',
+        name: 'repo',
+        default_branch: 'main',
+        local_path: '/tmp/replay-test',
+      });
+      const scanInfo = stmts.addScan.run({
+        repository_id: repoInfo.lastInsertRowid,
+        commit_sha: 'replay123',
+        status: 'completed',
+      });
+      scanId = scanInfo.lastInsertRowid;
+      const cycleInfo = stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'r.ts -> s.ts',
+        participating_files: JSON.stringify(['r.ts', 's.ts']),
+        raw_payload: JSON.stringify({ type: 'circular', path: ['r.ts', 's.ts'] }),
+      });
+      const fcInfo = stmts.addFixCandidate.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        classification: 'autofix_extract_shared',
+        confidence: 0.88,
+        reasons: JSON.stringify(['safe to extract shared symbol']),
+      });
+      const patchInfo = stmts.addPatch.run({
+        fix_candidate_id: fcInfo.lastInsertRowid,
+        patch_text: '--- a/r.ts\n+++ b/r.ts',
+        touched_files: JSON.stringify(['r.ts', 's.ts']),
+        validation_status: 'passed',
+        validation_summary: 'validation ok',
+      });
+      patchId = patchInfo.lastInsertRowid;
+    });
+
+    it('stores a replay bundle for a patch', () => {
+      const info = stmts.addPatchReplay.run({
+        patch_id: patchId,
+        scan_id: scanId,
+        source_target: 'https://github.com/example/replay.git',
+        commit_sha: 'replay123',
+        replay_bundle: JSON.stringify({
+          scan_id: scanId,
+          source_target: 'https://github.com/example/replay.git',
+          commit_sha: 'replay123',
+          repository: {
+            owner: 'replay-test',
+            name: 'repo',
+            default_branch: 'main',
+            local_path: '/tmp/replay-test',
+          },
+          cycle: {
+            path: ['r.ts', 's.ts'],
+            normalized_path: 'r.ts -> s.ts',
+            raw_payload: { type: 'circular', path: ['r.ts', 's.ts'] },
+          },
+          candidate: {
+            classification: 'autofix_extract_shared',
+            confidence: 0.88,
+            reasons: ['safe to extract shared symbol'],
+          },
+          validation: {
+            status: 'passed',
+            summary: 'validation ok',
+          },
+          file_snapshots: [
+            {
+              path: 'r.ts',
+              before: 'before',
+              after: 'after',
+            },
+          ],
+          patch_text: '--- a/r.ts\n+++ b/r.ts',
+        }),
+      });
+
+      const replay = stmts.getPatchReplayByPatchId.get(info.lastInsertRowid) as PatchReplayDTO;
+      expect(replay.patch_id).toBe(patchId);
+      expect(replay.commit_sha).toBe('replay123');
+      expect(JSON.parse(replay.replay_bundle).source_target).toBe('https://github.com/example/replay.git');
+    });
+  });
+
   describe('review_decisions', () => {
     let patchId: number | bigint;
 
@@ -521,6 +614,8 @@ describe('default production exports', () => {
     expect(defaultAddPatch).toBeDefined();
     expect(defaultGetPatch).toBeDefined();
     expect(defaultGetPatchesByFixCandidateId).toBeDefined();
+    expect(defaultAddPatchReplay).toBeDefined();
+    expect(defaultGetPatchReplayByPatchId).toBeDefined();
     expect(defaultAddReviewDecision).toBeDefined();
     expect(defaultGetReviewDecisionByPatchId).toBeDefined();
   });

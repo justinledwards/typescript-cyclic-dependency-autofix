@@ -1,10 +1,10 @@
+import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { analyzeRepository } from '../analyzer/analyzer.js';
 import type { CircularDependency } from '../analyzer/analyzer.js';
+import { analyzeRepository } from '../analyzer/analyzer.js';
 import type { GeneratedPatch } from '../codemod/generatePatch.js';
 
 const execFileAsync = promisify(execFile);
@@ -86,12 +86,14 @@ async function runTypecheckIfPresent(repoPath: string): Promise<{ ok: true } | {
     });
     return { ok: true };
   } catch (error) {
-    const output =
-      error && typeof error === 'object' && 'stderr' in error && typeof error.stderr === 'string'
-        ? error.stderr
-        : error instanceof Error
-          ? error.message
-          : 'Unknown typecheck failure';
+    let output: string;
+    if (error && typeof error === 'object' && 'stderr' in error && typeof error.stderr === 'string') {
+      output = error.stderr;
+    } else if (error instanceof Error) {
+      output = error.message;
+    } else {
+      output = 'Unknown typecheck failure';
+    }
 
     return { ok: false, output };
   }

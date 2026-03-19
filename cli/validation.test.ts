@@ -2,8 +2,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import * as analyzerModule from '../analyzer/analyzer.js';
 import type { CircularDependency } from '../analyzer/analyzer.js';
+import * as analyzerModule from '../analyzer/analyzer.js';
 import type { GeneratedPatch } from '../codemod/generatePatch.js';
 import { validateGeneratedPatch } from './validation.js';
 
@@ -34,9 +34,7 @@ describe('validateGeneratedPatch', () => {
       'b.ts': "import { AType } from './a';\nexport interface BType { a: AType }\n",
     });
 
-    vi.spyOn(analyzerModule, 'analyzeRepository')
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    vi.spyOn(analyzerModule, 'analyzeRepository').mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
     const generatedPatch: GeneratedPatch = {
       patchText: 'diff',

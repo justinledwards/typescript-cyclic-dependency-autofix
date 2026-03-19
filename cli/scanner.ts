@@ -3,7 +3,6 @@ import path from 'node:path';
 import simpleGit from 'simple-git';
 import { analyzeRepository } from '../analyzer/analyzer.js';
 import { generatePatchForCycle } from '../codemod/generatePatch.js';
-import { validateGeneratedPatch } from './validation.js';
 import type { RepositoryDTO } from '../db/index.js';
 import {
   addCycle,
@@ -15,6 +14,7 @@ import {
   updateRepositoryStatus,
   updateScanStatus,
 } from '../db/index.js';
+import { validateGeneratedPatch } from './validation.js';
 
 function parseTargetUrl(targetUrlOrOwnerName: string) {
   let owner = 'unknown';

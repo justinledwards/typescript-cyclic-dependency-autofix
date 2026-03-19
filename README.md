@@ -28,18 +28,27 @@ pnpm run dev
 ├── src/                 # TanStack Start frontend (React + file-based routing)
 │   ├── routes/          # Page routes (repositories, cycle detail, about)
 │   ├── components/      # Shared UI components
-│   └── lib/             # API client and utilities
+│   ├── lib/             # API client and utilities
+│   └── routeTree.gen.ts # Auto-generated route tree
 ├── backend/             # Fastify API server
 │   └── server.ts        # REST endpoints for repos, scans, cycles, reviews
 ├── analyzer/            # Dependency analysis engine
-│   └── analyzer.ts      # dependency-cruiser integration
-├── cli/                 # Commander CLI
-│   └── index.ts         # scan, scan:all, retry:failed, export:patches
+│   ├── analyzer.ts      # dependency-cruiser integration
+│   └── semantic.ts      # Semantic analysis and fix classification (ts-morph)
+├── cli/                 # Commander CLI and service layer
+│   ├── index.ts         # scan, scan:all, retry:failed, export:patches
+│   ├── scanner.ts       # Repository scanning and persistence logic
+│   ├── validation.ts    # Patch validation (tsc + re-analysis)
+│   └── exportPatches.ts # Approved patch export logic
 ├── db/                  # SQLite schema + data access layer
 │   └── index.ts         # Tables, DTOs, prepared statements
-├── codemod/             # jscodeshift rewrite scripts (planned)
+├── codemod/             # AST rewrite scripts for safe extraction
+│   └── generatePatch.ts # ts-morph based patch generation
+├── public/              # Static assets (logos, manifest, robots.txt)
 └── worktrees/           # Temp repo clones for patch generation (gitignored)
 ```
+
+Tests are co-located with their respective source files (e.g., `*.test.ts`).
 
 ## CLI Commands
 
@@ -55,7 +64,7 @@ pnpm run export:patches            # Export approved patches for PR generation
 1. **Clone/update** repository heads
 2. **Detect** circular dependencies using `dependency-cruiser`
 3. **Classify** each cycle: `autofix_extract_shared`, `autofix_direct_import`, `autofix_import_type`, `suggest_manual`, or `unsupported`
-4. **Generate patches** for high-confidence cases using `jscodeshift` + `recast`
+4. **Generate patches** for high-confidence cases using `ts-morph`
 5. **Validate** with `tsc --noEmit` and re-run cycle detection
 6. **Review** in the web UI — approve, reject, or request manual intervention
 
@@ -84,7 +93,7 @@ Only cycles matching **all** of these are auto-fixed:
 | Backend | Fastify 5 |
 | Database | SQLite (better-sqlite3) |
 | Analysis | dependency-cruiser + ts-morph |
-| Codemods | jscodeshift + recast |
+| Codemods | ts-morph (jscodeshift + recast planned) |
 | Testing | Vitest |
 
 ## License

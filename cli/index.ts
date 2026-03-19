@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { exportApprovedPatches } from './exportPatches.js';
 import { scanRepository } from './scanner.js';
 
 export function createProgram(): Command {
@@ -36,9 +37,11 @@ export function createProgram(): Command {
 
   program
     .command('export:patches')
-    .description('Export approved patch files for PR generation')
-    .action(() => {
-      console.log('Exporting approved patch files...');
+    .argument('[outputDir]', 'Directory to write exported patch files to')
+    .description('Export approved or PR-candidate patch files for PR generation')
+    .action(async (outputDir?: string) => {
+      const result = await exportApprovedPatches(outputDir);
+      console.log(`Exported ${result.exportedCount} patch file(s) to ${result.outputDir}`);
     });
 
   return program;
@@ -48,6 +51,6 @@ export function createProgram(): Command {
 /* v8 ignore start */
 const isMainModule = process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js');
 if (isMainModule) {
-  createProgram().parse(process.argv);
+  await createProgram().parseAsync(process.argv);
 }
 /* v8 ignore stop */

@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useState } from 'react';
-import { fetchRepository, fetchRepositoryFindings } from '../lib/api';
+import { type FindingRecord, fetchRepository, fetchRepositoryFindings } from '../lib/api';
 
 export const Route = createFileRoute('/repositories/$id/')({
   component: RepositoryFindings,
@@ -22,7 +22,7 @@ function RepositoryFindings() {
     error,
   } = useQuery({
     queryKey: ['findings', id, filter],
-    queryFn: () => fetchRepositoryFindings(id, filter === 'all' ? undefined : { status: filter }),
+    queryFn: () => fetchRepositoryFindings(id, filter === 'all' ? undefined : { review_status: filter }),
   });
 
   if (repoLoading || findingsLoading) return <div className="p-8">Loading...</div>;
@@ -50,8 +50,9 @@ function RepositoryFindings() {
         >
           <option value="all">All</option>
           <option value="pending">Pending</option>
-          <option value="reviewed">Reviewed</option>
           <option value="approved">Approved</option>
+          <option value="pr_candidate">PR Candidate</option>
+          <option value="ignored">Ignored</option>
           <option value="rejected">Rejected</option>
         </select>
       </div>
@@ -83,10 +84,10 @@ function RepositoryFindings() {
                 </td>
               </tr>
             )}
-            {findings?.map((finding: Record<string, unknown>) => (
-              <tr key={String(finding.id)} className="hover:bg-gray-50">
+            {findings?.map((finding: FindingRecord) => (
+              <tr key={String(finding.cycle_id)} className="hover:bg-gray-50">
                 <td className="px-6 py-4 text-sm text-gray-900 break-words max-w-md">
-                  {finding.cycle_path ? (finding.cycle_path as string[]).join(' → ') : 'Unknown'}
+                  {finding.cycle_path.length > 0 ? finding.cycle_path.join(' → ') : 'Unknown'}
                 </td>
                 <td className="px-6 py-4 text-sm text-gray-500">
                   <span className="px-2 py-1 bg-gray-100 rounded-full text-xs font-medium">
@@ -99,18 +100,18 @@ function RepositoryFindings() {
                 <td className="px-6 py-4 text-sm text-gray-500">
                   <span
                     className={`px-2 py-1 rounded-full text-xs font-medium ${(() => {
-                      if (finding.status === 'approved') return 'bg-green-100 text-green-800';
-                      if (finding.status === 'rejected') return 'bg-red-100 text-red-800';
+                      if (finding.review_status === 'approved') return 'bg-green-100 text-green-800';
+                      if (finding.review_status === 'rejected') return 'bg-red-100 text-red-800';
                       return 'bg-yellow-100 text-yellow-800';
                     })()}`}
                   >
-                    {String(finding.status || 'pending')}
+                    {String(finding.review_status || 'pending')}
                   </span>
                 </td>
                 <td className="px-6 py-4 text-right text-sm font-medium">
                   <Link
                     to="/repositories/$id/cycles/$cycleId"
-                    params={{ id, cycleId: String(finding.id) }}
+                    params={{ id, cycleId: String(finding.cycle_id) }}
                     className="text-blue-600 hover:text-blue-900"
                   >
                     View

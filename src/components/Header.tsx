@@ -39,6 +39,9 @@ export default function Header() {
           <Link to="/" className="nav-link" activeProps={{ className: 'nav-link is-active' }}>
             Repositories
           </Link>
+          <Link to="/findings" className="nav-link" activeProps={{ className: 'nav-link is-active' }}>
+            Review Queue
+          </Link>
           <Link to="/about" className="nav-link" activeProps={{ className: 'nav-link is-active' }}>
             About
           </Link>

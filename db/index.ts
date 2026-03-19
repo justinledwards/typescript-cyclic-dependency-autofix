@@ -142,7 +142,8 @@ const SCHEMA_SQL = `
     decision TEXT NOT NULL, -- approved, rejected, ignored, pr_candidate
     notes TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (patch_id) REFERENCES patches(id)
+    FOREIGN KEY (patch_id) REFERENCES patches(id),
+    UNIQUE(patch_id)
   );
 
   -- Indexes
@@ -249,6 +250,10 @@ export function createStatements(database: DatabaseType) {
     addReviewDecision: database.prepare(`
       INSERT INTO review_decisions (patch_id, decision, notes)
       VALUES (@patch_id, @decision, @notes)
+      ON CONFLICT(patch_id) DO UPDATE SET
+        decision = excluded.decision,
+        notes = excluded.notes,
+        created_at = CURRENT_TIMESTAMP
     `),
     getReviewDecisionByPatchId: database.prepare(`
       SELECT * FROM review_decisions WHERE patch_id = ?

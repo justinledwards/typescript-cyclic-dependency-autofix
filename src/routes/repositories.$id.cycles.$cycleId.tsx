@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createFileRoute, Link } from '@tanstack/react-router';
-import { fetchCycleDetail } from '../lib/api';
+import { fetchCycleDetail, type ReviewDecision, submitReviewDecision } from '../lib/api';
 
 export const Route = createFileRoute('/repositories/$id/cycles/$cycleId')({
   component: CycleDetail,
@@ -8,6 +8,7 @@ export const Route = createFileRoute('/repositories/$id/cycles/$cycleId')({
 
 function CycleDetail() {
   const { id, cycleId } = Route.useParams();
+  const queryClient = useQueryClient();
 
   const {
     data: cycle,
@@ -18,12 +19,30 @@ function CycleDetail() {
     queryFn: () => fetchCycleDetail(id, cycleId),
   });
 
+  const reviewMutation = useMutation({
+    mutationFn: (decision: ReviewDecision) => {
+      if (!cycle?.patch_id) {
+        throw new Error('No patch is available for this cycle.');
+      }
+
+      return submitReviewDecision(String(cycle.patch_id), decision);
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['cycle', id, cycleId] }),
+        queryClient.invalidateQueries({ queryKey: ['findings'] }),
+      ]);
+    },
+  });
+
   if (isLoading) return <div className="p-8">Loading cycle details...</div>;
   if (error) return <div className="p-8 text-red-600">Error loading cycle details</div>;
 
   let statusColor = 'text-gray-800';
   if (cycle?.validation_status === 'passed') statusColor = 'text-green-600';
   if (cycle?.validation_status === 'failed') statusColor = 'text-red-600';
+
+  const canReview = Boolean(cycle?.patch_id);
 
   return (
     <div className="p-8 max-w-6xl mx-auto">
@@ -50,6 +69,13 @@ function CycleDetail() {
                 <span className="font-medium">
                   {cycle.confidence ? `${(Number(cycle.confidence) * 100).toFixed(0)}%` : 'N/A'}
                 </span>
+              </div>
+              <div>
+                <span className="text-gray-500 block text-sm">Review Status</span>
+                <span className="font-medium bg-gray-100 px-2 py-1 rounded-md mt-1 inline-block">
+                  {String(cycle.review_status || 'pending')}
+                </span>
+                {cycle.review_notes && <p className="mt-2 text-sm text-gray-500">{cycle.review_notes}</p>}
               </div>
               <div className="col-span-2">
                 <span className="text-gray-500 block text-sm">Cycle Path</span>
@@ -104,17 +130,43 @@ function CycleDetail() {
           <div className="flex gap-4 justify-end">
             <button
               type="button"
-              className="px-6 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
+              disabled={!canReview || reviewMutation.isPending}
+              onClick={() => reviewMutation.mutate('rejected')}
+              className="px-6 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors disabled:cursor-not-allowed disabled:bg-red-300"
             >
               Reject
             </button>
             <button
               type="button"
-              className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+              disabled={!canReview || reviewMutation.isPending}
+              onClick={() => reviewMutation.mutate('ignored')}
+              className="px-6 py-2 bg-slate-700 text-white rounded-md hover:bg-slate-800 transition-colors disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              Ignore
+            </button>
+            <button
+              type="button"
+              disabled={!canReview || reviewMutation.isPending}
+              onClick={() => reviewMutation.mutate('pr_candidate')}
+              className="px-6 py-2 bg-amber-600 text-white rounded-md hover:bg-amber-700 transition-colors disabled:cursor-not-allowed disabled:bg-amber-300"
+            >
+              PR Candidate
+            </button>
+            <button
+              type="button"
+              disabled={!canReview || reviewMutation.isPending}
+              onClick={() => reviewMutation.mutate('approved')}
+              className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors disabled:cursor-not-allowed disabled:bg-green-300"
             >
               Approve
             </button>
           </div>
+          {!canReview && (
+            <p className="text-right text-sm text-gray-500">
+              A patch must exist before a review decision can be recorded.
+            </p>
+          )}
+          {reviewMutation.isPending && <p className="text-right text-sm text-gray-500">Saving review decision...</p>}
         </div>
       )}
     </div>

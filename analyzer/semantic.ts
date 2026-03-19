@@ -26,6 +26,8 @@ export interface ExtractSharedFixPlan {
   sourceFile: string;
   targetFile: string;
   symbols: string[];
+  sharedFile: string;
+  preserveSourceExports: boolean;
 }
 
 export interface SemanticAnalysisResult {
@@ -138,17 +140,21 @@ export class SemanticAnalyzer {
     );
 
     if (extractionPlan) {
-      const { sourceFile, targetFile, symbols } = extractionPlan;
+      const { sourceFile, targetFile, symbols, sharedFile, preserveSourceExports } = extractionPlan;
 
       return {
         classification: 'autofix_extract_shared',
         confidence: 0.8,
-        reasons: [`Cycle can be resolved by extracting symbols from ${sourceFile} into a shared file.`],
+        reasons: [
+          `Cycle can be resolved by extracting ${symbols.join(', ')} from ${sourceFile} into ${sharedFile} while preserving the ${sourceFile} API.`,
+        ],
         plan: {
           kind: 'extract_shared',
           sourceFile,
           targetFile,
           symbols,
+          sharedFile,
+          preserveSourceExports,
         },
       };
     }
@@ -272,24 +278,101 @@ export class SemanticAnalyzer {
     symbolsFromBUsedInA: string[],
   ): ExtractSharedFixPlan | undefined {
     if (this.isExtractable(sourceFileB, symbolsFromBUsedInA, [fileA])) {
-      return {
-        kind: 'extract_shared',
-        sourceFile: fileB,
-        targetFile: fileA,
-        symbols: symbolsFromBUsedInA,
-      };
+      return this.createExtractSharedPlan(fileB, fileA, symbolsFromBUsedInA);
     }
 
     if (this.isExtractable(sourceFileA, symbolsFromAUsedInB, [fileB])) {
-      return {
-        kind: 'extract_shared',
-        sourceFile: fileA,
-        targetFile: fileB,
-        symbols: symbolsFromAUsedInB,
-      };
+      return this.createExtractSharedPlan(fileA, fileB, symbolsFromAUsedInB);
     }
 
     return undefined;
+  }
+
+  private createExtractSharedPlan(sourceFile: string, targetFile: string, symbols: string[]): ExtractSharedFixPlan {
+    return {
+      kind: 'extract_shared',
+      sourceFile,
+      targetFile,
+      symbols,
+      sharedFile: this.chooseSharedFilePath(sourceFile, targetFile, symbols),
+      preserveSourceExports: true,
+    };
+  }
+
+  private chooseSharedFilePath(sourceFile: string, targetFile: string, symbols: string[]): string {
+    const sourceDir = path.dirname(sourceFile);
+    const sourceExt = path.extname(sourceFile);
+    const targetExt = path.extname(targetFile);
+    const preferredExt = sourceExt === targetExt ? sourceExt : '.ts';
+    const sourceStem = path.basename(sourceFile, sourceExt);
+    const targetStem = path.basename(targetFile, targetExt);
+    const parentStem = sourceDir === '.' ? sourceStem : path.basename(sourceDir);
+    const candidateStems = new Set<string>();
+
+    if (symbols.length === 1) {
+      candidateStems.add(this.formatSharedModuleStem(symbols[0], sourceStem));
+    }
+
+    if (!this.isGenericSharedStem(sourceStem)) {
+      candidateStems.add(sourceStem);
+    }
+
+    if (!this.isGenericSharedStem(parentStem)) {
+      candidateStems.add(parentStem);
+    }
+
+    if (symbols.length === 1 && !this.isGenericSharedStem(sourceStem)) {
+      candidateStems.add(`${sourceStem}-${this.formatSharedModuleStem(symbols[0], sourceStem)}`);
+    }
+
+    candidateStems.add(`${sourceStem}-${targetStem}`);
+
+    for (const candidateStem of candidateStems) {
+      const sharedFile = this.normalizeRepoRelativePath(path.join(sourceDir, `${candidateStem}.shared${preferredExt}`));
+      if (sharedFile === sourceFile || sharedFile === targetFile) {
+        continue;
+      }
+
+      if (!this.pathExistsInRepo(sharedFile)) {
+        return sharedFile;
+      }
+    }
+
+    return this.normalizeRepoRelativePath(path.join(sourceDir, `${sourceStem}-${targetStem}.shared${preferredExt}`));
+  }
+
+  private formatSharedModuleStem(symbol: string, referenceStem: string): string {
+    if (referenceStem.includes('-')) {
+      return this.toSeparatedCase(symbol, '-');
+    }
+
+    if (referenceStem.includes('_')) {
+      return this.toSeparatedCase(symbol, '_');
+    }
+
+    return symbol;
+  }
+
+  private toSeparatedCase(value: string, separator: '-' | '_'): string {
+    return value
+      .replaceAll(/([a-z0-9])([A-Z])/g, `$1${separator}$2`)
+      .replaceAll(/[^a-zA-Z0-9]+/g, separator)
+      .replaceAll(new RegExp(`${separator}+`, 'g'), separator)
+      .replaceAll(new RegExp(`^${separator}|${separator}$`, 'g'), '')
+      .toLowerCase();
+  }
+
+  private isGenericSharedStem(stem: string): boolean {
+    return stem.length <= 1 || ['index', 'types', 'type', 'utils', 'shared'].includes(stem.toLowerCase());
+  }
+
+  private pathExistsInRepo(relativePath: string): boolean {
+    const absolutePath = path.join(this.repoPath, relativePath);
+    return !!this.project.getSourceFile(absolutePath) || fs.existsSync(absolutePath);
+  }
+
+  private normalizeRepoRelativePath(filePath: string): string {
+    return filePath.split(path.sep).join('/');
   }
 
   private buildDirectImportPlan(cycleFiles: string[]): DirectImportSearchResult {

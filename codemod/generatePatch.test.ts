@@ -72,15 +72,20 @@ describe('generatePatchForCycle', () => {
         sourceFile: 'b.ts',
         targetFile: 'a.ts',
         symbols: ['helperB'],
+        sharedFile: 'helperB.shared.ts',
+        preserveSourceExports: true,
       },
     };
 
     const patch = await generatePatchForCycle(repoPath, cycle, analysis);
 
     expect(patch).not.toBeNull();
-    expect(patch?.patchText).toContain('b-a.shared');
+    expect(patch?.patchText).toContain('helperB.shared');
     expect(patch?.patchText).toContain("export const helperB = () => 'ok';");
-    expect(patch?.touchedFiles).toEqual(['b.ts', 'a.ts', 'b-a.shared.ts']);
+    expect(patch?.touchedFiles).toEqual(['b.ts', 'a.ts', 'helperB.shared.ts']);
+    const sourceSnapshot = patch?.fileSnapshots.find((snapshot) => snapshot.path === 'b.ts');
+    expect(sourceSnapshot?.after).toMatch(/export \{ helperB \} from ['"]\.\/helperB\.shared['"];/);
+    expect(sourceSnapshot?.after).not.toMatch(/import \{ helperB \} from ['"]\.\/helperB\.shared['"];/);
   });
 
   it('creates a direct-import patch when a safe leaf is reachable through a barrel', async () => {

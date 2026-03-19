@@ -94,7 +94,7 @@
       "biome check --write",
       "eslint --fix"
     ],
-    "*.{json,md,css}": [
+    "*.{json,css}": [
       "biome format --write"
     ]
   }

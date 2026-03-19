@@ -12,6 +12,7 @@ import {
   addRepository,
   addScan,
   getRepositoryByOwnerName,
+  updateRepositoryLocalPath,
   updateRepositoryStatus,
   updateScanStatus,
 } from '../db/index.js';
@@ -19,6 +20,11 @@ import {
 function parseTargetUrl(targetUrlOrOwnerName: string) {
   let owner = 'unknown';
   let name = targetUrlOrOwnerName;
+
+  const githubPath = parseGithubPath(targetUrlOrOwnerName);
+  if (githubPath) {
+    return githubPath;
+  }
 
   if (targetUrlOrOwnerName.includes('github.com')) {
     const withoutHttps = targetUrlOrOwnerName.replace('https://', '').replace('http://', '');
@@ -37,28 +43,31 @@ function parseTargetUrl(targetUrlOrOwnerName: string) {
 }
 
 export async function scanRepository(targetUrlOrOwnerName: string, worktreesDir = './worktrees') {
-  const { owner, name } = parseTargetUrl(targetUrlOrOwnerName);
+  const resolvedTarget = await resolveScanTarget(targetUrlOrOwnerName, worktreesDir);
+  const { owner, name } = resolvedTarget;
 
-  const repo = ensureRepository(owner, name);
+  const repo = ensureRepository(owner, name, resolvedTarget.localPath);
 
   updateRepositoryStatus.run({ id: repo.id, status: 'scanning' });
 
-  await fs.mkdir(worktreesDir, { recursive: true });
-  const repoPath = path.join(worktreesDir, `${owner}-${name}`);
+  if (!resolvedTarget.localPath) {
+    await fs.mkdir(worktreesDir, { recursive: true });
 
-  updateRepositoryStatus.run({ id: repo.id, status: 'downloading' });
-  const git = simpleGit();
-  const gitRepo = simpleGit(repoPath);
+    updateRepositoryStatus.run({ id: repo.id, status: 'downloading' });
+    const git = simpleGit();
+    const gitRepo = simpleGit(resolvedTarget.repoPath);
 
-  try {
-    await syncRepositoryClone(git, gitRepo, repoPath, owner, name, targetUrlOrOwnerName);
-  } catch (error) {
-    updateRepositoryStatus.run({ id: repo.id, status: 'clone_failed' });
-    throw error;
+    try {
+      await syncRepositoryClone(git, gitRepo, resolvedTarget);
+    } catch (error) {
+      updateRepositoryStatus.run({ id: repo.id, status: 'clone_failed' });
+      throw error;
+    }
   }
 
   updateRepositoryStatus.run({ id: repo.id, status: 'scanning' });
 
+  const gitRepo = simpleGit(resolvedTarget.repoPath);
   const commitSha = await getLatestCommitSha(gitRepo);
 
   const scanInfo = addScan.run({
@@ -69,16 +78,16 @@ export async function scanRepository(targetUrlOrOwnerName: string, worktreesDir 
   const scanId = scanInfo.lastInsertRowid as number;
 
   try {
-    const cycles = await analyzeRepository(repoPath);
+    const cycles = await analyzeRepository(resolvedTarget.repoPath);
 
     for (const cycle of cycles) {
-      await persistCycle(scanId, repoPath, cycle);
+      await persistCycle(scanId, resolvedTarget.repoPath, cycle);
     }
 
     updateScanStatus.run({ id: scanId, status: 'completed' });
     updateRepositoryStatus.run({ id: repo.id, status: 'analyzed' });
 
-    return { scanId, repoPath, cyclesFound: cycles.length };
+    return { scanId, repoPath: resolvedTarget.repoPath, cyclesFound: cycles.length };
   } catch (error) {
     updateScanStatus.run({ id: scanId, status: 'failed' });
     updateRepositoryStatus.run({ id: repo.id, status: 'validation_failed' });
@@ -86,9 +95,14 @@ export async function scanRepository(targetUrlOrOwnerName: string, worktreesDir 
   }
 }
 
-function ensureRepository(owner: string, name: string): RepositoryDTO {
+function ensureRepository(owner: string, name: string, localPath: string | null): RepositoryDTO {
   const existingRepo = getRepositoryByOwnerName.get(owner, name) as RepositoryDTO | undefined;
   if (existingRepo) {
+    if (localPath && existingRepo.local_path !== localPath) {
+      updateRepositoryLocalPath.run({ id: existingRepo.id, local_path: localPath });
+      return { ...existingRepo, local_path: localPath };
+    }
+
     return existingRepo;
   }
 
@@ -96,26 +110,64 @@ function ensureRepository(owner: string, name: string): RepositoryDTO {
     owner,
     name,
     default_branch: 'main',
-    local_path: null,
+    local_path: localPath,
   });
 
   return { id: info.lastInsertRowid as number, owner, name } as RepositoryDTO;
 }
 
+async function resolveScanTarget(targetUrlOrOwnerName: string, worktreesDir: string): Promise<{
+  owner: string;
+  name: string;
+  repoPath: string;
+  localPath: string | null;
+  cloneUrl: string | null;
+}> {
+  const looksLikeRemoteTarget = targetUrlOrOwnerName.includes('github.com') || targetUrlOrOwnerName.includes('://');
+  if (!looksLikeRemoteTarget) {
+    const localPath = path.resolve(targetUrlOrOwnerName);
+    if (await hasExistingDirectory(localPath)) {
+      const { owner, name } = await resolveLocalRepositoryIdentity(localPath);
+      return {
+        owner,
+        name,
+        repoPath: localPath,
+        localPath,
+        cloneUrl: null,
+      };
+    }
+  }
+
+  const { owner, name } = parseTargetUrl(targetUrlOrOwnerName);
+  return {
+    owner,
+    name,
+    repoPath: path.join(worktreesDir, `${owner}-${name}`),
+    localPath: null,
+    cloneUrl:
+      targetUrlOrOwnerName.includes('github.com') || !targetUrlOrOwnerName.includes('/')
+        ? targetUrlOrOwnerName
+        : resolveCloneUrl(owner, name),
+  };
+}
+
 async function syncRepositoryClone(
   git: ReturnType<typeof simpleGit>,
   gitRepo: ReturnType<typeof simpleGit>,
-  repoPath: string,
-  owner: string,
-  name: string,
-  targetUrlOrOwnerName: string,
+  target: {
+    owner: string;
+    name: string;
+    repoPath: string;
+    localPath: string | null;
+    cloneUrl: string | null;
+  },
 ): Promise<void> {
-  if (await hasClonedRepo(repoPath)) {
+  if (await hasClonedRepo(target.repoPath)) {
     await gitRepo.fetch();
     return;
   }
 
-  await git.clone(resolveCloneUrl(targetUrlOrOwnerName, owner, name), repoPath);
+  await git.clone(target.cloneUrl ?? resolveCloneUrl(target.owner, target.name), target.repoPath);
 }
 
 async function hasClonedRepo(repoPath: string): Promise<boolean> {
@@ -127,12 +179,61 @@ async function hasClonedRepo(repoPath: string): Promise<boolean> {
   }
 }
 
-function resolveCloneUrl(targetUrlOrOwnerName: string, owner: string, name: string): string {
-  if (targetUrlOrOwnerName.includes('github.com') || !targetUrlOrOwnerName.includes('/')) {
-    return targetUrlOrOwnerName;
+async function hasExistingDirectory(repoPath: string): Promise<boolean> {
+  return hasClonedRepo(repoPath);
+}
+
+async function resolveLocalRepositoryIdentity(localPath: string): Promise<{ owner: string; name: string }> {
+  const git = simpleGit(localPath);
+
+  try {
+    const remotes = await git.getRemotes(true);
+    const originRemote = remotes.find((remote) => remote.name === 'origin') ?? remotes[0];
+    const remoteUrl = originRemote?.refs.fetch ?? originRemote?.refs.push;
+
+    if (remoteUrl) {
+      const parsedRemote = parseGithubPath(remoteUrl);
+      if (parsedRemote) {
+        return parsedRemote;
+      }
+    }
+  } catch {
+    // Fall back to a local-only identity below.
   }
 
+  const baseName = path.basename(localPath).replace(/\.git$/, '') || 'unknown-repo';
+  return { owner: 'local', name: baseName };
+}
+
+function resolveCloneUrl(owner: string, name: string): string {
   return `https://github.com/${owner}/${name}.git`;
+}
+
+function parseGithubPath(input: string): { owner: string; name: string } | null {
+  const stripped = input.trim().replace(/\.git$/, '');
+  const normalized = stripped
+    .replace(/^https?:\/\//, '')
+    .replace(/^ssh:\/\//, '')
+    .replace(/^git@/, '');
+
+  if (!normalized.includes('github.com')) {
+    return null;
+  }
+
+  const githubPath = normalized
+    .replace(/^github\.com[/:]/, '')
+    .replace(/^github\.com$/, '');
+
+  if (!githubPath) {
+    return null;
+  }
+
+  const [owner, name] = githubPath.split('/');
+  if (!owner) {
+    return null;
+  }
+
+  return { owner, name: name || 'unknown-repo' };
 }
 
 async function getLatestCommitSha(gitRepo: ReturnType<typeof simpleGit>): Promise<string> {

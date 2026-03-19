@@ -201,6 +201,11 @@ export function createStatements(database: DatabaseType) {
       SET status = @status, updated_at = CURRENT_TIMESTAMP
       WHERE id = @id
     `),
+    updateRepositoryLocalPath: database.prepare(`
+      UPDATE repositories
+      SET local_path = @local_path, updated_at = CURRENT_TIMESTAMP
+      WHERE id = @id
+    `),
 
     // Scans
     addScan: database.prepare(`
@@ -317,6 +322,10 @@ export const getAllRepositories = {
 export const updateRepositoryStatus = {
   run: (...args: Parameters<ReturnType<typeof createStatements>['updateRepositoryStatus']['run']>) =>
     getStatements().updateRepositoryStatus.run(...args),
+};
+export const updateRepositoryLocalPath = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['updateRepositoryLocalPath']['run']>) =>
+    getStatements().updateRepositoryLocalPath.run(...args),
 };
 export const addScan = {
   run: (...args: Parameters<ReturnType<typeof createStatements>['addScan']['run']>) =>

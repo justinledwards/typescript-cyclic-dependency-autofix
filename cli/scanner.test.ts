@@ -93,6 +93,42 @@ describe('Scanner Worker', () => {
     expect(cycles[0].normalized_path).toBe('a.ts -> b.ts -> a.ts');
   });
 
+  it('does not construct a repo git client before the clone target exists', async () => {
+    vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
+
+    const cloneTarget = path.join(process.cwd(), 'worktrees', 'justin-repo');
+    const rootGit = {
+      clone: vi.fn(),
+      fetch: vi.fn(),
+      log: vi.fn(),
+      getRemotes: vi.fn(),
+    };
+    const repoGit = {
+      clone: vi.fn(),
+      fetch: vi.fn(),
+      log: vi.fn().mockResolvedValue({ latest: { hash: 'mock-sha' } }),
+      getRemotes: vi.fn(),
+    };
+
+    vi.mocked(simpleGit).mockImplementation(((baseDir?: string) => {
+      if (baseDir === undefined) {
+        return rootGit;
+      }
+
+      if (baseDir === cloneTarget) {
+        return repoGit;
+      }
+
+      throw new Error(`Unexpected simple-git baseDir: ${baseDir}`);
+    }) as unknown as typeof simpleGit);
+
+    await expect(scanRepository('justin/repo')).resolves.toMatchObject({
+      repoPath: cloneTarget,
+      cyclesFound: 1,
+    });
+    expect(rootGit.clone).toHaveBeenCalledWith('https://github.com/justin/repo.git', cloneTarget);
+  });
+
   it('fetches existing repo instead of cloning', async () => {
     vi.mocked(fs.stat).mockResolvedValue({ isDirectory: () => true } as never);
 

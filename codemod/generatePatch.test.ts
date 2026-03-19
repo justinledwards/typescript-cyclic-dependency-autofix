@@ -83,6 +83,42 @@ describe('generatePatchForCycle', () => {
     expect(patch?.touchedFiles).toEqual(['b.ts', 'a.ts', 'b-a.shared.ts']);
   });
 
+  it('creates a direct-import patch when a safe leaf is reachable through a barrel', async () => {
+    const repoPath = await createRepo({
+      'app.ts': "import { Foo } from './index';\nexport const appValue = Foo + 1;\n",
+      'index.ts': "export { Foo } from './foo';\nexport { Bar } from './bar';\n",
+      'foo.ts': 'export const Foo = 1;\n',
+      'bar.ts': "import { appValue } from './app';\nexport const Bar = appValue + 1;\n",
+    });
+
+    const cycle: CircularDependency = {
+      type: 'circular',
+      path: ['app.ts', 'index.ts', 'bar.ts', 'app.ts'],
+    };
+    const analysis: SemanticAnalysisResult = {
+      classification: 'autofix_direct_import',
+      confidence: 0.85,
+      reasons: ['rewrite barrel import to leaf module'],
+      plan: {
+        kind: 'direct_import',
+        imports: [
+          {
+            sourceFile: 'app.ts',
+            barrelFile: 'index.ts',
+            targetFile: 'foo.ts',
+            symbols: ['Foo'],
+          },
+        ],
+      },
+    };
+
+    const patch = await generatePatchForCycle(repoPath, cycle, analysis);
+
+    expect(patch).not.toBeNull();
+    expect(patch?.patchText).toContain("+import { Foo } from './foo';");
+    expect(patch?.touchedFiles).toEqual(['app.ts']);
+  });
+
   it('returns null when no executable plan is present', async () => {
     const repoPath = await createRepo({
       'a.ts': 'export const a = 1;\n',

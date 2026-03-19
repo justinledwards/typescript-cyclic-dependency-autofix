@@ -1,7 +1,12 @@
 import path from 'node:path';
-import { Project, type SourceFile } from 'ts-morph';
+import { type ImportDeclaration, Project, type SourceFile } from 'ts-morph';
 import type { CircularDependency } from '../analyzer/analyzer.js';
-import type { ExtractSharedFixPlan, ImportTypeFixPlan, SemanticAnalysisResult } from '../analyzer/semantic.js';
+import type {
+  DirectImportFixPlan,
+  ExtractSharedFixPlan,
+  ImportTypeFixPlan,
+  SemanticAnalysisResult,
+} from '../analyzer/semantic.js';
 
 export interface GeneratedPatch {
   patchText: string;
@@ -27,6 +32,10 @@ export async function generatePatchForCycle(
 
   if (analysis.plan.kind === 'import_type') {
     return generateImportTypePatch(repoPath, analysis.plan);
+  }
+
+  if (analysis.plan.kind === 'direct_import') {
+    return generateDirectImportPatch(repoPath, analysis.plan);
   }
 
   if (analysis.plan.kind === 'extract_shared') {
@@ -166,6 +175,86 @@ async function generateExtractSharedPatch(
     validationStatus: 'pending',
     validationSummary: 'Generated shared-file extraction candidate. Validation has not run yet.',
   };
+}
+
+async function generateDirectImportPatch(repoPath: string, plan: DirectImportFixPlan): Promise<GeneratedPatch | null> {
+  const project = createProject();
+  const touchedFiles = new Map<string, FileSnapshot>();
+
+  for (const importPlan of plan.imports) {
+    const snapshot = rewriteDirectImportPlanEntry(project, repoPath, importPlan);
+    if (!snapshot) {
+      continue;
+    }
+
+    touchedFiles.set(importPlan.sourceFile, snapshot);
+  }
+
+  if (touchedFiles.size === 0) {
+    return null;
+  }
+
+  return {
+    patchText: buildPatchText([...touchedFiles.values()]),
+    touchedFiles: [...touchedFiles.keys()],
+    validationStatus: 'pending',
+    validationSummary: 'Generated direct-import patch candidate. Validation has not run yet.',
+  };
+}
+
+function rewriteDirectImportPlanEntry(
+  project: Project,
+  repoPath: string,
+  importPlan: DirectImportFixPlan['imports'][number],
+): FileSnapshot | undefined {
+  const sourceFile = getProjectSourceFile(project, repoPath, importPlan.sourceFile);
+  const barrelPath = path.resolve(repoPath, importPlan.barrelFile);
+  const targetPath = path.resolve(repoPath, importPlan.targetFile);
+  const before = sourceFile.getFullText();
+  let changed = false;
+
+  for (const importDecl of sourceFile.getImportDeclarations()) {
+    if (!matchesDirectImportDeclaration(repoPath, sourceFile, importDecl, barrelPath, importPlan.symbols)) {
+      continue;
+    }
+
+    importDecl.setModuleSpecifier(moduleSpecifierForFile(path.dirname(sourceFile.getFilePath()), targetPath));
+    changed = true;
+  }
+
+  if (!changed) {
+    return undefined;
+  }
+
+  return {
+    path: importPlan.sourceFile,
+    before,
+    after: sourceFile.getFullText(),
+  };
+}
+
+function matchesDirectImportDeclaration(
+  repoPath: string,
+  sourceFile: SourceFile,
+  importDecl: ImportDeclaration,
+  barrelPath: string,
+  symbols: string[],
+): boolean {
+  if (!resolvesToFile(repoPath, sourceFile, importDecl.getModuleSpecifierValue(), barrelPath)) {
+    return false;
+  }
+
+  if (importDecl.getDefaultImport() || importDecl.getNamespaceImport() || importDecl.getNamedImports().length === 0) {
+    return false;
+  }
+
+  const importedNames = importDecl.getNamedImports().map((namedImport) => namedImport.getName());
+  if (importedNames.length !== symbols.length) {
+    return false;
+  }
+
+  const importedNameSet = new Set(importedNames);
+  return symbols.every((symbol) => importedNameSet.has(symbol));
 }
 
 function createProject() {

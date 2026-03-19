@@ -88,6 +88,45 @@ describe('SemanticAnalyzer', () => {
     });
   });
 
+  it('detects direct_import for safe barrel re-exports', () => {
+    analyzer.project.createSourceFile(
+      '/dummy/repo/app.ts',
+      `
+      import { Foo } from './index';
+      export const appValue = Foo + 1;
+    `,
+    );
+    analyzer.project.createSourceFile(
+      '/dummy/repo/index.ts',
+      `
+      export { Foo } from './foo';
+      export { Bar } from './bar';
+    `,
+    );
+    analyzer.project.createSourceFile('/dummy/repo/foo.ts', 'export const Foo = 1;');
+    analyzer.project.createSourceFile(
+      '/dummy/repo/bar.ts',
+      `
+      import { appValue } from './app';
+      export const Bar = appValue + 1;
+    `,
+    );
+
+    const result = analyzer.analyzeCycle(['app.ts', 'index.ts', 'bar.ts', 'app.ts']);
+    expect(result.classification).toBe('autofix_direct_import');
+    expect(result.plan).toEqual({
+      kind: 'direct_import',
+      imports: [
+        {
+          sourceFile: 'app.ts',
+          barrelFile: 'index.ts',
+          targetFile: 'foo.ts',
+          symbols: ['Foo'],
+        },
+      ],
+    });
+  });
+
   it('identifies suggest_manual for non-type cycles with unsupported declarations', () => {
     analyzer.project.createSourceFile(
       '/dummy/repo/a.ts',
@@ -105,6 +144,34 @@ describe('SemanticAnalyzer', () => {
     );
 
     const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'a.ts']);
+    expect(result.classification).toBe('suggest_manual');
+  });
+
+  it('falls back to suggest_manual for ambiguous barrel re-exports', () => {
+    analyzer.project.createSourceFile(
+      '/dummy/repo/app.ts',
+      `
+      import { Foo } from './index';
+      export const appValue = Foo + 1;
+    `,
+    );
+    analyzer.project.createSourceFile(
+      '/dummy/repo/index.ts',
+      `
+      export * from './foo';
+      export * from './bar';
+    `,
+    );
+    analyzer.project.createSourceFile('/dummy/repo/foo.ts', 'export const Foo = 1;');
+    analyzer.project.createSourceFile(
+      '/dummy/repo/bar.ts',
+      `
+      import { appValue } from './app';
+      export const Bar = appValue + 1;
+    `,
+    );
+
+    const result = analyzer.analyzeCycle(['app.ts', 'index.ts', 'bar.ts', 'app.ts']);
     expect(result.classification).toBe('suggest_manual');
   });
 

@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { analyzeRepository } from '../analyzer/analyzer.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
 import { createProgram } from './index.js';
@@ -10,6 +11,39 @@ const exportedDir = path.join(os.tmpdir(), 'patches');
 
 vi.mock('./scanner.js', () => ({
   scanRepository: vi.fn().mockResolvedValue({ scanId: 999, cyclesFound: 2 }),
+}));
+
+vi.mock('../analyzer/analyzer.js', () => ({
+  analyzeRepository: vi.fn().mockResolvedValue([
+    {
+      type: 'circular',
+      path: ['a.ts', 'b.ts', 'a.ts'],
+      analysis: {
+        classification: 'autofix_import_type',
+        confidence: 0.9,
+        reasons: ['Cycle can be resolved by converting concrete imports to type-only imports.'],
+        upstreamabilityScore: 0.94,
+        planner: {
+          cycleFiles: ['a.ts', 'b.ts'],
+          cycleSize: 2,
+          cycleShape: 'two_file',
+          cycleSignals: {
+            explicitImportEdges: 2,
+            loadedFiles: 2,
+            missingFiles: 0,
+          },
+          fallbackClassification: 'autofix_import_type',
+          fallbackConfidence: 0.9,
+          fallbackReasons: ['Cycle can be resolved by converting concrete imports to type-only imports.'],
+          selectedStrategy: 'import_type',
+          selectedClassification: 'autofix_import_type',
+          selectedScore: 0.94,
+          selectionSummary: 'Selected import_type with score 0.94 after evaluating 3 strategies.',
+          attempts: [],
+        },
+      },
+    },
+  ]),
 }));
 
 vi.mock('./exportPatches.js', () => ({
@@ -69,6 +103,59 @@ describe('CLI', () => {
 
     consoleErrSpy.mockRestore();
     exitSpy.mockRestore();
+  });
+
+  it('explain command prints planner output as JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'explain', '/some/repo']);
+
+    expect(vi.mocked(analyzeRepository)).toHaveBeenCalledWith('/some/repo');
+    expect(consoleSpy).toHaveBeenCalledWith(
+      JSON.stringify(
+        {
+          repo: '/some/repo',
+          cycleCount: 1,
+          cycles: [
+            {
+              id: 1,
+              path: ['a.ts', 'b.ts', 'a.ts'],
+              analysis: {
+                classification: 'autofix_import_type',
+                confidence: 0.9,
+                reasons: ['Cycle can be resolved by converting concrete imports to type-only imports.'],
+                plan: undefined,
+                upstreamabilityScore: 0.94,
+                planner: {
+                  cycleFiles: ['a.ts', 'b.ts'],
+                  cycleSize: 2,
+                  cycleShape: 'two_file',
+                  cycleSignals: {
+                    explicitImportEdges: 2,
+                    loadedFiles: 2,
+                    missingFiles: 0,
+                  },
+                  fallbackClassification: 'autofix_import_type',
+                  fallbackConfidence: 0.9,
+                  fallbackReasons: ['Cycle can be resolved by converting concrete imports to type-only imports.'],
+                  selectedStrategy: 'import_type',
+                  selectedClassification: 'autofix_import_type',
+                  selectedScore: 0.94,
+                  selectionSummary: 'Selected import_type with score 0.94 after evaluating 3 strategies.',
+                  attempts: [],
+                },
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+
+    consoleSpy.mockRestore();
   });
 
   it('scan:all command logs scanning message', () => {
@@ -155,10 +242,11 @@ describe('CLI', () => {
     exitSpy.mockRestore();
   });
 
-  it('has all five subcommands registered', () => {
+  it('has all six subcommands registered', () => {
     const program = createProgram();
     const commandNames = program.commands.map((cmd) => cmd.name());
     expect(commandNames).toContain('scan');
+    expect(commandNames).toContain('explain');
     expect(commandNames).toContain('scan:all');
     expect(commandNames).toContain('retry:failed');
     expect(commandNames).toContain('create:pr');

@@ -22,6 +22,17 @@ describe('SemanticAnalyzer', () => {
     const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'c.ts', 'a.ts']);
     expect(result.classification).toBe('unsupported');
     expect(result.reasons[0]).toMatch(/Only two-file cycles/);
+    expect(result.planner).toMatchObject({
+      cycleShape: 'multi_file',
+      selectedStrategy: undefined,
+    });
+    expect(result.planner?.attempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ strategy: 'import_type', status: 'not_applicable' }),
+        expect.objectContaining({ strategy: 'direct_import', status: 'rejected' }),
+        expect.objectContaining({ strategy: 'extract_shared', status: 'not_applicable' }),
+      ]),
+    );
   });
 
   it('rejects cycles where files cannot be read', () => {
@@ -29,6 +40,11 @@ describe('SemanticAnalyzer', () => {
     const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'a.ts']);
     expect(result.classification).toBe('unsupported');
     expect(result.reasons[0]).toMatch(/could not be read/);
+    expect(result.planner).toMatchObject({
+      cycleShape: 'two_file',
+      selectedStrategy: undefined,
+    });
+    expect(result.planner?.cycleSignals.missingFiles).toBe(2);
   });
 
   it('detects type-only cycles', () => {
@@ -51,6 +67,26 @@ describe('SemanticAnalyzer', () => {
     const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'a.ts']);
     expect(result.classification).toBe('autofix_import_type');
     expect(result.reasons[0]).toMatch(/converting concrete imports to type-only/);
+    expect(result.upstreamabilityScore).toBe(0.94);
+    expect(result.planner).toMatchObject({
+      cycleShape: 'two_file',
+      selectedStrategy: 'import_type',
+      selectedClassification: 'autofix_import_type',
+      selectedScore: 0.94,
+    });
+    expect(result.planner?.attempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          strategy: 'import_type',
+          status: 'candidate',
+          signals: expect.objectContaining({
+            importEdges: 2,
+            introducesNewFile: false,
+          }),
+        }),
+        expect.objectContaining({ strategy: 'direct_import', status: 'not_applicable' }),
+      ]),
+    );
     expect(result.plan).toEqual({
       kind: 'import_type',
       imports: [
@@ -81,6 +117,24 @@ describe('SemanticAnalyzer', () => {
     expect(result.classification).toBe('autofix_extract_shared');
     expect(result.reasons[0]).toMatch(/helperB/);
     expect(result.reasons[0]).toMatch(/helperB\.shared\.ts/);
+    expect(result.planner).toMatchObject({
+      cycleShape: 'two_file',
+      selectedStrategy: 'extract_shared',
+      selectedClassification: 'autofix_extract_shared',
+    });
+    expect(result.planner?.attempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          strategy: 'extract_shared',
+          status: 'candidate',
+          signals: expect.objectContaining({
+            introducesNewFile: true,
+            preservesSourceExports: true,
+            sharedFile: 'helperB.shared.ts',
+          }),
+        }),
+      ]),
+    );
     expect(result.plan).toEqual({
       kind: 'extract_shared',
       sourceFile: 'b.ts',
@@ -148,6 +202,12 @@ describe('SemanticAnalyzer', () => {
 
     const result = analyzer.analyzeCycle(['app.ts', 'index.ts', 'bar.ts', 'app.ts']);
     expect(result.classification).toBe('autofix_direct_import');
+    expect(result.planner).toMatchObject({
+      cycleShape: 'multi_file',
+      selectedStrategy: 'direct_import',
+      selectedClassification: 'autofix_direct_import',
+      selectedScore: 0.89,
+    });
     expect(result.plan).toEqual({
       kind: 'direct_import',
       imports: [
@@ -207,6 +267,16 @@ describe('SemanticAnalyzer', () => {
 
     const result = analyzer.analyzeCycle(['app.ts', 'index.ts', 'bar.ts', 'app.ts']);
     expect(result.classification).toBe('suggest_manual');
+    expect(result.planner?.selectionSummary).toMatch(/falling back to suggest_manual/);
+    expect(result.planner?.attempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          strategy: 'direct_import',
+          status: 'rejected',
+          reasons: expect.arrayContaining([expect.stringMatching(/ambiguous or side-effectful/)]),
+        }),
+      ]),
+    );
   });
 
   it('suggests manual when imports are not found', () => {
@@ -215,6 +285,8 @@ describe('SemanticAnalyzer', () => {
     const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'a.ts']);
     expect(result.classification).toBe('suggest_manual');
     expect(result.reasons[0]).toMatch(/explicit imports/);
+    expect(result.planner?.selectionSummary).toMatch(/falling back to suggest_manual/);
+    expect(result.planner?.cycleSignals.explicitImportEdges).toBe(0);
   });
 
   it('rejects extraction if symbol is not exported', () => {

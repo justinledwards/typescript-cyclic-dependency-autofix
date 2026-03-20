@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { analyzeRepository } from '../analyzer/analyzer.js';
+import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
 import { scanRepository } from './scanner.js';
@@ -19,6 +20,29 @@ export function createProgram(): Command {
         console.log(`Scan completed successfully (Scan ID: ${result.scanId}). Found ${result.cyclesFound} cycles.`);
       } catch (error) {
         console.error(`Failed to scan repository ${repo}:`, error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('mine:repo-history <repo>')
+    .description('Mine commit messages from a local git repository into the benchmark database')
+    .option('--label <label>', 'Override the repository label stored in the benchmark database')
+    .option('--max-commits <count>', 'Limit how many commits are scanned', parseInteger)
+    .option('--max-matches <count>', 'Limit how many benchmark cases are stored', parseInteger)
+    .action(async (repo: string, options: { label?: string; maxCommits?: number; maxMatches?: number }) => {
+      console.log(`Mining benchmark cases from repository: ${repo}`);
+      try {
+        const result = await mineBenchmarkCasesFromRepo(repo, {
+          repositoryLabel: options.label,
+          maxCommits: options.maxCommits,
+          maxMatches: options.maxMatches,
+        });
+        console.log(
+          `Mined ${result.insertedCases} benchmark case(s) from ${result.matchedCommits} matching commit(s) in ${result.repository}.`,
+        );
+      } catch (error) {
+        console.error(`Failed to mine benchmark cases from repository ${repo}:`, error);
         process.exit(1);
       }
     });
@@ -130,6 +154,15 @@ export function createProgram(): Command {
     });
 
   return program;
+}
+
+function parseInteger(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`Expected a non-negative integer. Received: ${value}`);
+  }
+
+  return parsed;
 }
 
 // Run when executed directly

@@ -64,6 +64,24 @@ export interface PatchReplayDTO {
   created_at: string;
 }
 
+export interface BenchmarkCaseDTO {
+  id: number;
+  repository: string;
+  source: string;
+  commit_sha: string;
+  title: string;
+  body: string | null;
+  url: string | null;
+  pr_number: number | null;
+  issue_number: number | null;
+  strategy_labels: string;
+  validation_signals: string;
+  diff_features: string;
+  matched_terms: string;
+  notes: string | null;
+  created_at: string;
+}
+
 export interface ReviewDecisionDTO {
   id: number;
   patch_id: number;
@@ -159,6 +177,25 @@ const SCHEMA_SQL = `
     FOREIGN KEY (scan_id) REFERENCES scans(id)
   );
 
+  CREATE TABLE IF NOT EXISTS benchmark_cases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repository TEXT NOT NULL,
+    source TEXT NOT NULL,
+    commit_sha TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT,
+    url TEXT,
+    pr_number INTEGER,
+    issue_number INTEGER,
+    strategy_labels TEXT NOT NULL, -- JSON string
+    validation_signals TEXT NOT NULL, -- JSON string
+    diff_features TEXT NOT NULL, -- JSON string
+    matched_terms TEXT NOT NULL, -- JSON string
+    notes TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(repository, source, commit_sha)
+  );
+
   CREATE TABLE IF NOT EXISTS review_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     patch_id INTEGER NOT NULL,
@@ -180,6 +217,9 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_patches_fix_candidate_id ON patches(fix_candidate_id);
   CREATE INDEX IF NOT EXISTS idx_patch_replays_patch_id ON patch_replays(patch_id);
   CREATE INDEX IF NOT EXISTS idx_patch_replays_scan_id ON patch_replays(scan_id);
+  CREATE INDEX IF NOT EXISTS idx_benchmark_cases_repository ON benchmark_cases(repository);
+  CREATE INDEX IF NOT EXISTS idx_benchmark_cases_commit_sha ON benchmark_cases(commit_sha);
+  CREATE INDEX IF NOT EXISTS idx_benchmark_cases_source ON benchmark_cases(source);
   CREATE INDEX IF NOT EXISTS idx_review_decisions_patch_id ON review_decisions(patch_id);
   CREATE INDEX IF NOT EXISTS idx_review_decisions_decision ON review_decisions(decision);
 `;
@@ -283,6 +323,24 @@ export function createStatements(database: DatabaseType) {
     `),
     getPatchReplayByPatchId: database.prepare(`
       SELECT * FROM patch_replays WHERE patch_id = ?
+    `),
+
+    // Benchmark Cases
+    addBenchmarkCase: database.prepare(`
+      INSERT OR IGNORE INTO benchmark_cases (
+        repository, source, commit_sha, title, body, url, pr_number, issue_number,
+        strategy_labels, validation_signals, diff_features, matched_terms, notes
+      )
+      VALUES (
+        @repository, @source, @commit_sha, @title, @body, @url, @pr_number, @issue_number,
+        @strategy_labels, @validation_signals, @diff_features, @matched_terms, @notes
+      )
+    `),
+    getBenchmarkCases: database.prepare(`
+      SELECT * FROM benchmark_cases ORDER BY created_at DESC, id DESC
+    `),
+    getBenchmarkCasesByRepository: database.prepare(`
+      SELECT * FROM benchmark_cases WHERE repository = ? ORDER BY created_at DESC, id DESC
     `),
 
     // Review Decisions
@@ -408,6 +466,18 @@ export const addPatchReplay = {
 export const getPatchReplayByPatchId = {
   get: (...args: Parameters<ReturnType<typeof createStatements>['getPatchReplayByPatchId']['get']>) =>
     getStatements().getPatchReplayByPatchId.get(...args),
+};
+export const addBenchmarkCase = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['addBenchmarkCase']['run']>) =>
+    getStatements().addBenchmarkCase.run(...args),
+};
+export const getBenchmarkCases = {
+  all: (...args: Parameters<ReturnType<typeof createStatements>['getBenchmarkCases']['all']>) =>
+    getStatements().getBenchmarkCases.all(...args),
+};
+export const getBenchmarkCasesByRepository = {
+  all: (...args: Parameters<ReturnType<typeof createStatements>['getBenchmarkCasesByRepository']['all']>) =>
+    getStatements().getBenchmarkCasesByRepository.all(...args),
 };
 export const addReviewDecision = {
   run: (...args: Parameters<ReturnType<typeof createStatements>['addReviewDecision']['run']>) =>

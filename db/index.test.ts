@@ -1,9 +1,11 @@
 import type { Database as DatabaseType } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  type BenchmarkCaseDTO,
   type CycleDTO,
   createDatabase,
   createStatements,
+  addBenchmarkCase as defaultAddBenchmarkCase,
   addCycle as defaultAddCycle,
   addFixCandidate as defaultAddFixCandidate,
   addPatch as defaultAddPatch,
@@ -12,11 +14,13 @@ import {
   addReviewDecision as defaultAddReviewDecision,
   addScan as defaultAddScan,
   getAllRepositories as defaultGetAllRepositories,
+  getBenchmarkCases as defaultGetBenchmarkCases,
+  getBenchmarkCasesByRepository as defaultGetBenchmarkCasesByRepository,
   getCyclesByScanId as defaultGetCyclesByScanId,
   getFixCandidatesByCycleId as defaultGetFixCandidatesByCycleId,
   getPatch as defaultGetPatch,
-  getPatchReplayByPatchId as defaultGetPatchReplayByPatchId,
   getPatchesByFixCandidateId as defaultGetPatchesByFixCandidateId,
+  getPatchReplayByPatchId as defaultGetPatchReplayByPatchId,
   getRepository as defaultGetRepository,
   getRepositoryByOwnerName as defaultGetRepositoryByOwnerName,
   getReviewDecisionByPatchId as defaultGetReviewDecisionByPatchId,
@@ -71,6 +75,7 @@ describe('db module', () => {
       expect(tableNames).toContain('fix_candidates');
       expect(tableNames).toContain('patches');
       expect(tableNames).toContain('patch_replays');
+      expect(tableNames).toContain('benchmark_cases');
       expect(tableNames).toContain('review_decisions');
     });
 
@@ -90,6 +95,9 @@ describe('db module', () => {
       expect(indexNames).toContain('idx_patches_fix_candidate_id');
       expect(indexNames).toContain('idx_patch_replays_patch_id');
       expect(indexNames).toContain('idx_patch_replays_scan_id');
+      expect(indexNames).toContain('idx_benchmark_cases_repository');
+      expect(indexNames).toContain('idx_benchmark_cases_commit_sha');
+      expect(indexNames).toContain('idx_benchmark_cases_source');
       expect(indexNames).toContain('idx_review_decisions_patch_id');
       expect(indexNames).toContain('idx_review_decisions_decision');
     });
@@ -417,6 +425,7 @@ describe('db module', () => {
         owner: 'replay-test',
         name: 'repo',
         default_branch: 'main',
+        // eslint-disable-next-line sonarjs/publicly-writable-directories
         local_path: '/tmp/replay-test',
       });
       const scanInfo = stmts.addScan.run({
@@ -461,6 +470,7 @@ describe('db module', () => {
             owner: 'replay-test',
             name: 'repo',
             default_branch: 'main',
+            // eslint-disable-next-line sonarjs/publicly-writable-directories
             local_path: '/tmp/replay-test',
           },
           cycle: {
@@ -492,6 +502,81 @@ describe('db module', () => {
       expect(replay.patch_id).toBe(patchId);
       expect(replay.commit_sha).toBe('replay123');
       expect(JSON.parse(replay.replay_bundle).source_target).toBe('https://github.com/example/replay.git');
+    });
+  });
+
+  describe('benchmark_cases', () => {
+    it('adds and retrieves benchmark cases by repository', () => {
+      const info = stmts.addBenchmarkCase.run({
+        repository: 'acme/widget',
+        source: 'git-log',
+        commit_sha: 'abc123',
+        title: 'Fix circular dependency with import type',
+        body: 'Converts a runtime import to type-only.',
+        url: 'https://github.com/acme/widget/commit/abc123',
+        pr_number: null,
+        issue_number: 42,
+        strategy_labels: JSON.stringify(['import_type', 'type_runtime_split']),
+        validation_signals: JSON.stringify({
+          matched_terms: ['import type', 'circular dependency'],
+          search_terms: 14,
+        }),
+        diff_features: JSON.stringify({
+          files_changed: 2,
+          additions: 4,
+          deletions: 2,
+          new_files: 0,
+          renamed_files: 0,
+          modified_files: 2,
+          binary_files: 0,
+        }),
+        matched_terms: JSON.stringify(['import type', 'circular dependency']),
+        notes: 'Curated from git log',
+      });
+
+      const caseRow = stmts.getBenchmarkCasesByRepository.all('acme/widget') as BenchmarkCaseDTO[];
+      expect(caseRow).toHaveLength(1);
+      expect(caseRow[0].commit_sha).toBe('abc123');
+      expect(JSON.parse(caseRow[0].strategy_labels)).toEqual(['import_type', 'type_runtime_split']);
+      expect(JSON.parse(caseRow[0].matched_terms)).toContain('circular dependency');
+      expect(info.changes).toBe(1);
+    });
+
+    it('returns all benchmark cases ordered by newest first', () => {
+      stmts.addBenchmarkCase.run({
+        repository: 'acme/widget',
+        source: 'git-log',
+        commit_sha: 'first',
+        title: 'First',
+        body: null,
+        url: null,
+        pr_number: null,
+        issue_number: null,
+        strategy_labels: '["extract_shared"]',
+        validation_signals: '{}',
+        diff_features: '{}',
+        matched_terms: '[]',
+        notes: null,
+      });
+      stmts.addBenchmarkCase.run({
+        repository: 'acme/widget',
+        source: 'git-log',
+        commit_sha: 'second',
+        title: 'Second',
+        body: null,
+        url: null,
+        pr_number: null,
+        issue_number: null,
+        strategy_labels: '["direct_import"]',
+        validation_signals: '{}',
+        diff_features: '{}',
+        matched_terms: '[]',
+        notes: null,
+      });
+
+      const cases = stmts.getBenchmarkCases.all() as BenchmarkCaseDTO[];
+      expect(cases[0].commit_sha).toBe('second');
+      expect(cases[1].commit_sha).toBe('first');
     });
   });
 
@@ -616,6 +701,9 @@ describe('default production exports', () => {
     expect(defaultGetPatchesByFixCandidateId).toBeDefined();
     expect(defaultAddPatchReplay).toBeDefined();
     expect(defaultGetPatchReplayByPatchId).toBeDefined();
+    expect(defaultAddBenchmarkCase).toBeDefined();
+    expect(defaultGetBenchmarkCases).toBeDefined();
+    expect(defaultGetBenchmarkCasesByRepository).toBeDefined();
     expect(defaultAddReviewDecision).toBeDefined();
     expect(defaultGetReviewDecisionByPatchId).toBeDefined();
   });

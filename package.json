@@ -20,6 +20,7 @@
     "check": "biome check --write . && eslint --fix . && pnpm run test:coverage",
     "scan": "tsx cli/index.ts scan",
     "explain": "tsx cli/index.ts explain",
+    "mine:repo-history": "tsx cli/index.ts mine:repo-history",
     "scan:all": "tsx cli/index.ts scan:all",
     "retry:failed": "tsx cli/index.ts retry:failed",
     "create:pr": "tsx cli/index.ts create:pr",

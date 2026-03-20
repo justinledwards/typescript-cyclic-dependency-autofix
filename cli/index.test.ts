@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { analyzeRepository } from '../analyzer/analyzer.js';
+import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
 import { createProgram } from './index.js';
@@ -11,6 +12,17 @@ const exportedDir = path.join(os.tmpdir(), 'patches');
 
 vi.mock('./scanner.js', () => ({
   scanRepository: vi.fn().mockResolvedValue({ scanId: 999, cyclesFound: 2 }),
+}));
+
+vi.mock('./benchmarkMiner.js', () => ({
+  mineBenchmarkCasesFromRepo: vi.fn().mockResolvedValue({
+    repository: 'acme/widget',
+    repoPath: '/some/repo',
+    scannedCommits: 12,
+    matchedCommits: 3,
+    insertedCases: 2,
+    matchedTerms: ['circular dependency', 'import type'],
+  }),
 }));
 
 vi.mock('../analyzer/analyzer.js', () => ({
@@ -83,6 +95,23 @@ describe('CLI', () => {
 
     expect(consoleSpy).toHaveBeenCalledWith('Scanning repository: /some/repo');
     expect(consoleSpy).toHaveBeenCalledWith('Scan completed successfully (Scan ID: 999). Found 2 cycles.');
+    consoleSpy.mockRestore();
+  });
+
+  it('mine:repo-history command logs repository path and calls miner', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'mine:repo-history', '/some/repo', '--label', 'acme/widget']);
+
+    expect(consoleSpy).toHaveBeenCalledWith('Mining benchmark cases from repository: /some/repo');
+    expect(consoleSpy).toHaveBeenCalledWith('Mined 2 benchmark case(s) from 3 matching commit(s) in acme/widget.');
+    expect(vi.mocked(mineBenchmarkCasesFromRepo)).toHaveBeenCalledWith('/some/repo', {
+      repositoryLabel: 'acme/widget',
+      maxCommits: undefined,
+      maxMatches: undefined,
+    });
     consoleSpy.mockRestore();
   });
 
@@ -242,11 +271,12 @@ describe('CLI', () => {
     exitSpy.mockRestore();
   });
 
-  it('has all six subcommands registered', () => {
+  it('has all seven subcommands registered', () => {
     const program = createProgram();
     const commandNames = program.commands.map((cmd) => cmd.name());
     expect(commandNames).toContain('scan');
     expect(commandNames).toContain('explain');
+    expect(commandNames).toContain('mine:repo-history');
     expect(commandNames).toContain('scan:all');
     expect(commandNames).toContain('retry:failed');
     expect(commandNames).toContain('create:pr');

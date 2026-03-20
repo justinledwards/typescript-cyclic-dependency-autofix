@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { analyzeRepository } from '../analyzer/analyzer.js';
+import { mineBenchmarkCasesFromCorpus } from './benchmarkCorpus.js';
 import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
@@ -23,6 +24,44 @@ export function createProgram(): Command {
         process.exit(1);
       }
     });
+
+  program
+    .command('mine:corpus')
+    .description('Mine benchmark cases across the curated TypeScript repository corpus')
+    .option('--only <slug>', 'Restrict mining to a specific corpus repository slug or repo name', collectString, [])
+    .option('--search-root <path>', 'Additional root path to search for local repository checkouts', collectString, [])
+    .option('--workspace <path>', 'Directory to clone missing repositories into before mining')
+    .option('--clone-missing', 'Clone missing repositories into the workspace before mining')
+    .option('--limit <count>', 'Limit how many corpus repositories are processed', parseInteger)
+    .option('--max-commits <count>', 'Limit how many commits are scanned per repository', parseInteger)
+    .option('--max-matches <count>', 'Limit how many benchmark cases are stored per repository', parseInteger)
+    .action(
+      async (options: {
+        only: string[];
+        searchRoot: string[];
+        workspace?: string;
+        cloneMissing?: boolean;
+        limit?: number;
+        maxCommits?: number;
+        maxMatches?: number;
+      }) => {
+        try {
+          const result = await mineBenchmarkCasesFromCorpus({
+            onlyRepositories: options.only,
+            searchRoots: options.searchRoot,
+            workspaceDir: options.workspace,
+            cloneMissing: options.cloneMissing,
+            limit: options.limit,
+            maxCommits: options.maxCommits,
+            maxMatches: options.maxMatches,
+          });
+          console.log(JSON.stringify(result, null, 2));
+        } catch (error) {
+          console.error('Failed to mine the benchmark corpus:', error);
+          process.exit(1);
+        }
+      },
+    );
 
   program
     .command('mine:repo-history <repo>')
@@ -163,6 +202,10 @@ function parseInteger(value: string): number {
   }
 
   return parsed;
+}
+
+function collectString(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }
 
 // Run when executed directly

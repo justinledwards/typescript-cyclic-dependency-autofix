@@ -159,4 +159,40 @@ describe('mineBenchmarkCasesFromRepo', () => {
 
     db.close();
   });
+
+  it('records corpus context in benchmark signals when provided', async () => {
+    const db = createDatabase(':memory:');
+    initSchema(db);
+    const git = createFakeGit();
+
+    // eslint-disable-next-line sonarjs/publicly-writable-directories
+    const result = await mineBenchmarkCasesFromRepo('/tmp/acme-widget', {
+      database: db,
+      git,
+      maxMatches: 1,
+      caseContext: {
+        corpusRepository: 'openclaw/openclaw',
+        corpusGroups: ['calibration'],
+        corpusPatterns: ['extract_shared'],
+        corpusDescription: 'Calibration repo',
+      },
+    });
+
+    const [entry] = createStatements(db).getBenchmarkCasesByRepository.all('acme/widget') as Array<{
+      validation_signals: string;
+      notes: string | null;
+    }>;
+
+    expect(result.insertedCases).toBe(1);
+    expect(JSON.parse(entry.validation_signals)).toMatchObject({
+      corpus_repository: 'openclaw/openclaw',
+      corpus_groups: ['calibration'],
+      corpus_patterns: ['extract_shared'],
+      corpus_description: 'Calibration repo',
+    });
+    expect(entry.notes).toContain('corpus repo: openclaw/openclaw');
+    expect(entry.notes).toContain('corpus groups: calibration');
+
+    db.close();
+  });
 });

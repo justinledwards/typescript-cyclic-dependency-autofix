@@ -30,6 +30,7 @@ export interface BenchmarkMiningOptions {
   searchTerms?: string[];
   maxCommits?: number;
   maxMatches?: number;
+  caseContext?: BenchmarkCaseContext;
 }
 
 export interface BenchmarkMiningResult {
@@ -39,6 +40,13 @@ export interface BenchmarkMiningResult {
   matchedCommits: number;
   insertedCases: number;
   matchedTerms: string[];
+}
+
+export interface BenchmarkCaseContext {
+  corpusRepository?: string;
+  corpusGroups?: string[];
+  corpusPatterns?: string[];
+  corpusDescription?: string;
 }
 
 export interface GitAdapter {
@@ -116,10 +124,11 @@ export async function mineBenchmarkCasesFromRepo(
         matched_terms: commitMatchedTerms,
         search_terms: searchTerms.length,
         commit_text_length: commitText.length,
+        ...buildBenchmarkContextSignals(options.caseContext),
       }),
       diff_features: JSON.stringify(diffFeatures),
       matched_terms: JSON.stringify(commitMatchedTerms),
-      notes: buildBenchmarkNote(commitMatchedTerms, diffFeatures, strategyLabels),
+      notes: buildBenchmarkNote(commitMatchedTerms, diffFeatures, strategyLabels, options.caseContext),
     });
 
     insertedCases += 1;
@@ -259,12 +268,45 @@ function classifyStrategyLabels(commitText: string): string[] {
   return [...labels];
 }
 
-function buildBenchmarkNote(matchedTerms: string[], diffFeatures: DiffFeatures, labels: string[]): string {
+function buildBenchmarkNote(
+  matchedTerms: string[],
+  diffFeatures: DiffFeatures,
+  labels: string[],
+  context?: BenchmarkCaseContext,
+): string {
+  const contextParts: string[] = [];
+  if (context?.corpusRepository) {
+    contextParts.push(`corpus repo: ${context.corpusRepository}`);
+  }
+  if (context?.corpusGroups?.length) {
+    contextParts.push(`corpus groups: ${context.corpusGroups.join(', ')}`);
+  }
+  if (context?.corpusPatterns?.length) {
+    contextParts.push(`corpus patterns: ${context.corpusPatterns.join(', ')}`);
+  }
+  if (context?.corpusDescription) {
+    contextParts.push(`corpus description: ${context.corpusDescription}`);
+  }
+
   return [
     `matched terms: ${matchedTerms.join(', ')}`,
     `labels: ${labels.join(', ')}`,
     `files changed: ${diffFeatures.files_changed}`,
+    ...contextParts,
   ].join('; ');
+}
+
+function buildBenchmarkContextSignals(context?: BenchmarkCaseContext): Record<string, string | string[] | undefined> {
+  if (!context) {
+    return {};
+  }
+
+  return {
+    corpus_repository: context.corpusRepository,
+    corpus_groups: context.corpusGroups,
+    corpus_patterns: context.corpusPatterns,
+    corpus_description: context.corpusDescription,
+  };
 }
 
 async function resolveRepositoryLabel(git: GitAdapter, repoPath: string): Promise<string> {

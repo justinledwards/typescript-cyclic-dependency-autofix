@@ -26,6 +26,7 @@ const CLASSIFICATION_OPTIONS = [
   ['autofix_extract_shared', 'Extract shared'],
   ['autofix_direct_import', 'Direct import'],
   ['autofix_import_type', 'Import type'],
+  ['autofix_host_state_update', 'Host state update'],
   ['suggest_manual', 'Suggest manual'],
   ['unsupported', 'Unsupported'],
   ['unclassified', 'Unclassified'],

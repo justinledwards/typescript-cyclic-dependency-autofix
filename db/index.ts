@@ -84,6 +84,7 @@ export type Classification =
   | 'autofix_extract_shared'
   | 'autofix_direct_import'
   | 'autofix_import_type'
+  | 'autofix_host_state_update'
   | 'suggest_manual'
   | 'unsupported';
 export type ReviewDecision = 'approved' | 'rejected' | 'ignored' | 'pr_candidate';

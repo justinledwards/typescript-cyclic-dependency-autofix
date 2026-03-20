@@ -1,9 +1,10 @@
 import path from 'node:path';
-import { type ImportDeclaration, Project, type SourceFile, SyntaxKind } from 'ts-morph';
+import { type ImportDeclaration, Node, Project, type SourceFile, SyntaxKind } from 'ts-morph';
 import type { CircularDependency } from '../analyzer/analyzer.js';
 import type {
   DirectImportFixPlan,
   ExtractSharedFixPlan,
+  HostStateUpdateFixPlan,
   ImportTypeFixPlan,
   SemanticAnalysisResult,
 } from '../analyzer/semantic.js';
@@ -41,6 +42,10 @@ export async function generatePatchForCycle(
 
   if (analysis.plan.kind === 'extract_shared') {
     return generateExtractSharedPatch(repoPath, analysis.plan);
+  }
+
+  if (analysis.plan.kind === 'host_state_update') {
+    return generateHostStateUpdatePatch(repoPath, analysis.plan);
   }
 
   return null;
@@ -210,6 +215,75 @@ async function generateDirectImportPatch(repoPath: string, plan: DirectImportFix
   };
 }
 
+async function generateHostStateUpdatePatch(
+  repoPath: string,
+  plan: HostStateUpdateFixPlan,
+): Promise<GeneratedPatch | null> {
+  const project = createProject();
+  const sourceFile = getProjectSourceFile(project, repoPath, plan.sourceFile);
+  const before = sourceFile.getFullText();
+  const targetPath = path.resolve(repoPath, plan.targetFile);
+
+  if (sourceFile.getFunctions().some((declaration) => declaration.getName() === plan.importedFunction)) {
+    return null;
+  }
+
+  let removedImport = false;
+  for (const importDecl of sourceFile.getImportDeclarations()) {
+    if (!resolvesToFile(repoPath, sourceFile, importDecl.getModuleSpecifierValue(), targetPath)) {
+      continue;
+    }
+
+    for (const namedImport of importDecl.getNamedImports()) {
+      const localName = namedImport.getAliasNode()?.getText() ?? namedImport.getName();
+      if (localName === plan.importedFunction) {
+        namedImport.remove();
+        removedImport = true;
+      }
+    }
+
+    if (
+      importDecl.getNamedImports().length === 0 &&
+      !importDecl.getDefaultImport() &&
+      !importDecl.getNamespaceImport()
+    ) {
+      importDecl.remove();
+    }
+  }
+
+  if (!removedImport) {
+    return null;
+  }
+
+  const persistenceModuleSpecifier =
+    plan.persistenceModuleKind === 'repo_file'
+      ? moduleSpecifierForFile(path.dirname(sourceFile.getFilePath()), path.resolve(repoPath, plan.persistenceModule))
+      : plan.persistenceModule;
+  addNamedImport(sourceFile, persistenceModuleSpecifier, [plan.persistenceFunction]);
+
+  insertHelperAfterImports(sourceFile, buildHostStateUpdateHelper(plan));
+
+  return {
+    patchText: buildPatchText([
+      {
+        path: plan.sourceFile,
+        before,
+        after: sourceFile.getFullText(),
+      },
+    ]),
+    touchedFiles: [plan.sourceFile],
+    validationStatus: 'pending',
+    validationSummary: 'Generated localized host-state update candidate. Validation has not run yet.',
+    fileSnapshots: [
+      {
+        path: plan.sourceFile,
+        before,
+        after: sourceFile.getFullText(),
+      },
+    ],
+  };
+}
+
 function rewriteDirectImportPlanEntry(
   project: Project,
   repoPath: string,
@@ -360,6 +434,51 @@ function sourceFileNeedsSharedImport(sourceFile: SourceFile, symbols: string[]):
   return sourceFile
     .getDescendantsOfKind(SyntaxKind.Identifier)
     .some((identifier) => extractedNameSet.has(identifier.getText()));
+}
+
+function insertHelperAfterImports(sourceFile: SourceFile, helperText: string) {
+  const statements = sourceFile.getStatements();
+  const importStatementCount = statements.filter((statement) => Node.isImportDeclaration(statement)).length;
+  sourceFile.insertStatements(importStatementCount, `\n${helperText}\n`);
+}
+
+function buildHostStateUpdateHelper(plan: HostStateUpdateFixPlan): string {
+  const normalizedValueName = plan.trimValue ? 'trimmed' : 'next';
+  const hostPropertyGuard = plan.mirrorHostProperty ? ` || !('${plan.mirrorHostProperty}' in host)` : '';
+  const mirrorHostTypeSegment = plan.mirrorHostProperty ? `; ${plan.mirrorHostProperty}: string` : '';
+  const lines = [
+    `function ${plan.importedFunction}(host: unknown, next: string) {`,
+    `  if (!host || typeof host !== 'object') {`,
+    `    return;`,
+    `  }`,
+    `  if (!('${plan.stateObjectProperty}' in host)${hostPropertyGuard}) {`,
+    `    return;`,
+    `  }`,
+    `  const settingsHost = host as { ${plan.stateObjectProperty}: Parameters<typeof ${plan.persistenceFunction}>[0]${mirrorHostTypeSegment} };`,
+  ];
+
+  if (plan.trimValue) {
+    lines.push(`  const trimmed = next.trim();`);
+  }
+
+  lines.push(
+    `  if (!${normalizedValueName} || String(settingsHost.${plan.stateObjectProperty}.${plan.updatedProperty}) === ${normalizedValueName}) {`,
+    `    return;`,
+    `  }`,
+    `  const settings = {`,
+    `    ...settingsHost.${plan.stateObjectProperty},`,
+    `    ${plan.updatedProperty}: ${normalizedValueName},`,
+    `  } as Parameters<typeof ${plan.persistenceFunction}>[0];`,
+    `  settingsHost.${plan.stateObjectProperty} = settings;`,
+  );
+
+  if (plan.mirrorHostProperty) {
+    lines.push(`  settingsHost.${plan.mirrorHostProperty} = String(settings.${plan.updatedProperty});`);
+  }
+
+  lines.push(`  ${plan.persistenceFunction}(settings);`, `}`);
+
+  return lines.join('\n');
 }
 
 function addNamedImport(sourceFile: SourceFile, moduleSpecifier: string, names: string[]) {

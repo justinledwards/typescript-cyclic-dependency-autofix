@@ -221,6 +221,67 @@ describe('SemanticAnalyzer', () => {
     });
   });
 
+  it('detects host_state_update for thin imported setters on caller-owned state', () => {
+    analyzer.project.createSourceFile(
+      '/dummy/repo/a.ts',
+      `
+      import { setLastActiveSessionKey } from './b';
+      export const runA = (host: unknown) => setLastActiveSessionKey(host, ' next ');
+    `,
+    );
+    analyzer.project.createSourceFile(
+      '/dummy/repo/b.ts',
+      `
+      import { runA } from './a';
+      import { saveSettings } from './storage';
+
+      export function applySettings(host: { settings: { lastActiveSessionKey: string }; applySessionKey: string }, next: { lastActiveSessionKey: string }) {
+        host.settings = next;
+        saveSettings(next);
+        host.applySessionKey = host.settings.lastActiveSessionKey;
+      }
+
+      export function setLastActiveSessionKey(host: { settings: { lastActiveSessionKey: string }; applySessionKey: string }, next: string) {
+        const trimmed = next.trim();
+        if (!trimmed) {
+          return;
+        }
+        if (host.settings.lastActiveSessionKey === trimmed) {
+          return;
+        }
+        applySettings(host, { ...host.settings, lastActiveSessionKey: trimmed });
+      }
+
+      export const runB = () => runA({ settings: { lastActiveSessionKey: 'main' }, applySessionKey: 'main' });
+    `,
+    );
+    analyzer.project.createSourceFile('/dummy/repo/storage.ts', 'export function saveSettings(_next: unknown) {}\n');
+
+    const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'a.ts']);
+
+    expect(result.classification).toBe('autofix_host_state_update');
+    expect(result.upstreamabilityScore).toBe(0.87);
+    expect(result.planner).toMatchObject({
+      cycleShape: 'two_file',
+      selectedStrategy: 'host_state_update',
+      selectedClassification: 'autofix_host_state_update',
+      selectedScore: 0.87,
+    });
+    expect(result.plan).toEqual({
+      kind: 'host_state_update',
+      sourceFile: 'a.ts',
+      targetFile: 'b.ts',
+      importedFunction: 'setLastActiveSessionKey',
+      persistenceModule: 'storage.ts',
+      persistenceModuleKind: 'repo_file',
+      persistenceFunction: 'saveSettings',
+      stateObjectProperty: 'settings',
+      updatedProperty: 'lastActiveSessionKey',
+      mirrorHostProperty: 'applySessionKey',
+      trimValue: true,
+    });
+  });
+
   it('identifies suggest_manual for non-type cycles with unsupported declarations', () => {
     analyzer.project.createSourceFile(
       '/dummy/repo/a.ts',

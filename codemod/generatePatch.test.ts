@@ -124,6 +124,86 @@ describe('generatePatchForCycle', () => {
     expect(patch?.touchedFiles).toEqual(['app.ts']);
   });
 
+  it('creates a localized host-state update patch without introducing a new file', async () => {
+    const repoPath = await createRepo({
+      'a.ts': [
+        "import { setLastActiveSessionKey } from './b';",
+        '',
+        "export const runA = (host: unknown) => setLastActiveSessionKey(host, ' next ');",
+        '',
+      ].join('\n'),
+      'b.ts': [
+        "import { runA } from './a';",
+        "import { saveSettings } from './storage';",
+        '',
+        'export function applySettings(',
+        '  host: { settings: { lastActiveSessionKey: string }; applySessionKey: string },',
+        '  next: { lastActiveSessionKey: string },',
+        ') {',
+        '  host.settings = next;',
+        '  saveSettings(next);',
+        '  host.applySessionKey = host.settings.lastActiveSessionKey;',
+        '}',
+        '',
+        'export function setLastActiveSessionKey(',
+        '  host: { settings: { lastActiveSessionKey: string }; applySessionKey: string },',
+        '  next: string,',
+        ') {',
+        '  const trimmed = next.trim();',
+        '  if (!trimmed) {',
+        '    return;',
+        '  }',
+        '  if (host.settings.lastActiveSessionKey === trimmed) {',
+        '    return;',
+        '  }',
+        '  applySettings(host, { ...host.settings, lastActiveSessionKey: trimmed });',
+        '}',
+        '',
+        "export const runB = () => runA({ settings: { lastActiveSessionKey: 'main' }, applySessionKey: 'main' });",
+        '',
+      ].join('\n'),
+      'storage.ts': 'export function saveSettings(_next: unknown) {}\n',
+    });
+
+    const cycle: CircularDependency = {
+      type: 'circular',
+      path: ['a.ts', 'b.ts', 'a.ts'],
+    };
+    const analysis: SemanticAnalysisResult = {
+      classification: 'autofix_host_state_update',
+      confidence: 0.84,
+      reasons: ['localize thin imported setter into caller-owned host state'],
+      plan: {
+        kind: 'host_state_update',
+        sourceFile: 'a.ts',
+        targetFile: 'b.ts',
+        importedFunction: 'setLastActiveSessionKey',
+        persistenceModule: 'storage.ts',
+        persistenceModuleKind: 'repo_file',
+        persistenceFunction: 'saveSettings',
+        stateObjectProperty: 'settings',
+        updatedProperty: 'lastActiveSessionKey',
+        mirrorHostProperty: 'applySessionKey',
+        trimValue: true,
+      },
+    };
+
+    const patch = await generatePatchForCycle(repoPath, cycle, analysis);
+
+    expect(patch).not.toBeNull();
+    expect(patch?.touchedFiles).toEqual(['a.ts']);
+
+    const sourceSnapshot = patch?.fileSnapshots.find((snapshot) => snapshot.path === 'a.ts');
+    expect(sourceSnapshot?.after).not.toContain("import { setLastActiveSessionKey } from './b';");
+    expect(sourceSnapshot?.after).toMatch(/import \{ saveSettings \} from ['"]\.\/storage['"];/);
+    expect(sourceSnapshot?.after).toContain('function setLastActiveSessionKey(host: unknown, next: string) {');
+    expect(sourceSnapshot?.after).toContain('const trimmed = next.trim();');
+    expect(sourceSnapshot?.after).toContain('settingsHost.settings = settings;');
+    expect(sourceSnapshot?.after).toContain('settingsHost.applySessionKey = String(settings.lastActiveSessionKey);');
+    expect(sourceSnapshot?.after).toContain('saveSettings(settings);');
+    expect(patch?.patchText).not.toContain('+++ b/set-last-active-session-key.shared.ts');
+  });
+
   it('returns null when no executable plan is present', async () => {
     const repoPath = await createRepo({
       'a.ts': 'export const a = 1;\n',

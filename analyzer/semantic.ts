@@ -30,16 +30,71 @@ export interface ExtractSharedFixPlan {
   preserveSourceExports: boolean;
 }
 
+export type PlanningStrategy = 'import_type' | 'direct_import' | 'extract_shared';
+export type StrategySignalValue = boolean | number | string;
+
+const missingCycleFilesReason = 'Files participating in the cycle could not be read or found.';
+
+export interface StrategyAttempt {
+  strategy: PlanningStrategy;
+  status: 'candidate' | 'rejected' | 'not_applicable';
+  summary: string;
+  reasons: string[];
+  signals: Record<string, StrategySignalValue>;
+  score?: number;
+  scoreBreakdown?: string[];
+  classification?: Classification;
+  confidence?: number;
+  plan?: ImportTypeFixPlan | DirectImportFixPlan | ExtractSharedFixPlan;
+}
+
+export interface CyclePlanningResult {
+  cycleFiles: string[];
+  cycleSize: number;
+  cycleShape: 'two_file' | 'multi_file';
+  cycleSignals: Record<string, StrategySignalValue>;
+  fallbackClassification: Classification;
+  fallbackConfidence: number;
+  fallbackReasons: string[];
+  selectedStrategy?: PlanningStrategy;
+  selectedClassification?: Classification;
+  selectedScore?: number;
+  selectionSummary: string;
+  attempts: StrategyAttempt[];
+}
+
 export interface SemanticAnalysisResult {
   classification: Classification;
   confidence: number;
   reasons: string[];
   plan?: ImportTypeFixPlan | DirectImportFixPlan | ExtractSharedFixPlan;
+  upstreamabilityScore?: number;
+  planner?: CyclePlanningResult;
 }
 
 interface DirectImportSearchResult {
   plan?: DirectImportFixPlan['imports'];
   sawBarrelScenario: boolean;
+}
+
+interface CyclePlanningContext {
+  cyclePath: string[];
+  uniqueFiles: string[];
+  cycleShape: 'two_file' | 'multi_file';
+  sourceFiles: Map<string, SourceFile | undefined>;
+  importsAToB: ImportDeclaration[];
+  importsBToA: ImportDeclaration[];
+  cycleSignals: Record<string, StrategySignalValue>;
+}
+
+interface StrategyDefinition {
+  strategy: PlanningStrategy;
+  describeApplicability: (context: CyclePlanningContext) => {
+    applicable: boolean;
+    summary: string;
+    signals: Record<string, StrategySignalValue>;
+  };
+  evaluate: (context: CyclePlanningContext) => StrategyAttempt;
 }
 
 export class SemanticAnalyzer {
@@ -56,26 +111,185 @@ export class SemanticAnalyzer {
   }
 
   public analyzeCycle(cyclePath: string[]): SemanticAnalysisResult {
-    const uniqueFiles = [...new Set(cyclePath)];
-    const directImportResult = uniqueFiles.length > 2 ? this.buildDirectImportPlan(uniqueFiles) : undefined;
+    const planning = this.planCycle(cyclePath);
+    const selectedAttempt =
+      planning.selectedStrategy === undefined
+        ? undefined
+        : planning.attempts.find(
+            (attempt) => attempt.strategy === planning.selectedStrategy && attempt.status === 'candidate',
+          );
 
-    if (directImportResult?.plan && directImportResult.plan.length > 0) {
-      const { barrelFile, targetFile, symbols } = directImportResult.plan[0];
+    if (selectedAttempt?.classification && selectedAttempt.confidence !== undefined) {
       return {
-        classification: 'autofix_direct_import',
-        confidence: 0.85,
-        reasons: [
-          `Cycle can be resolved by importing ${symbols.join(', ')} directly from ${targetFile} instead of ${barrelFile}.`,
-        ],
-        plan: {
-          kind: 'direct_import',
-          imports: directImportResult.plan,
-        },
+        classification: selectedAttempt.classification,
+        confidence: selectedAttempt.confidence,
+        reasons: selectedAttempt.reasons,
+        plan: selectedAttempt.plan,
+        upstreamabilityScore: selectedAttempt.score,
+        planner: planning,
       };
     }
 
-    if (uniqueFiles.length > 2) {
-      if (directImportResult?.sawBarrelScenario) {
+    return {
+      classification: planning.fallbackClassification,
+      confidence: planning.fallbackConfidence,
+      reasons: planning.fallbackReasons,
+      planner: planning,
+    };
+  }
+
+  public planCycle(cyclePath: string[]): CyclePlanningResult {
+    const context = this.buildPlanningContext(cyclePath);
+    const attempts = this.getStrategyDefinitions().map((strategy) => this.evaluateStrategy(strategy, context));
+    const selectedAttempt = this.selectBestAttempt(attempts);
+    const fallbackDecision = this.determineFallbackDecision(context, attempts);
+
+    return {
+      cycleFiles: context.uniqueFiles,
+      cycleSize: context.uniqueFiles.length,
+      cycleShape: context.cycleShape,
+      cycleSignals: context.cycleSignals,
+      fallbackClassification: selectedAttempt?.classification ?? fallbackDecision.classification,
+      fallbackConfidence: selectedAttempt?.confidence ?? fallbackDecision.confidence,
+      fallbackReasons: selectedAttempt?.reasons ?? fallbackDecision.reasons,
+      selectedStrategy: selectedAttempt?.strategy,
+      selectedClassification: selectedAttempt?.classification,
+      selectedScore: selectedAttempt?.score,
+      selectionSummary: selectedAttempt
+        ? `Selected ${selectedAttempt.strategy} with score ${selectedAttempt.score ?? 0} after evaluating ${attempts.length} strategies.`
+        : `No strategy cleared the safety filters; falling back to ${fallbackDecision.classification}.`,
+      attempts,
+    };
+  }
+
+  private buildPlanningContext(cyclePath: string[]): CyclePlanningContext {
+    const uniqueFiles = [...new Set(cyclePath)];
+    const cycleShape = uniqueFiles.length === 2 ? 'two_file' : 'multi_file';
+    const sourceFiles = new Map<string, SourceFile | undefined>(
+      uniqueFiles.map((filePath) => [filePath, this.loadCycleSourceFile(filePath)]),
+    );
+    const [fileA, fileB] = uniqueFiles;
+    const sourceFileA = fileA ? sourceFiles.get(fileA) : undefined;
+    const sourceFileB = fileB ? sourceFiles.get(fileB) : undefined;
+    const importsAToB = sourceFileA && fileB ? this.findImportsTo(sourceFileA, fileB) : [];
+    const importsBToA = sourceFileB && fileA ? this.findImportsTo(sourceFileB, fileA) : [];
+
+    return {
+      cyclePath,
+      uniqueFiles,
+      cycleShape,
+      sourceFiles,
+      importsAToB,
+      importsBToA,
+      cycleSignals: {
+        explicitImportEdges: importsAToB.length + importsBToA.length,
+        loadedFiles: [...sourceFiles.values()].filter(Boolean).length,
+        missingFiles: [...sourceFiles.values()].filter((sourceFile) => !sourceFile).length,
+      },
+    };
+  }
+
+  private getStrategyDefinitions(): StrategyDefinition[] {
+    return [
+      {
+        strategy: 'import_type',
+        describeApplicability: (context) => ({
+          applicable: context.cycleShape === 'two_file',
+          summary:
+            context.cycleShape === 'two_file'
+              ? 'Type-only import conversion can be evaluated for two-file cycles.'
+              : 'Type-only conversion is only supported for two-file cycles.',
+          signals: {
+            cycleShape: context.cycleShape,
+            cycleSize: context.uniqueFiles.length,
+          },
+        }),
+        evaluate: (context) => {
+          const [fileA, fileB] = context.uniqueFiles;
+
+          if (this.contextHasMissingFiles(context)) {
+            return this.createRejectedAttempt('import_type', missingCycleFilesReason, [missingCycleFilesReason], {
+              fileA: fileA ?? 'unknown',
+              fileB: fileB ?? 'unknown',
+            });
+          }
+
+          return this.evaluateImportTypeAttempt(fileA ?? '', fileB ?? '', context.importsAToB, context.importsBToA);
+        },
+      },
+      {
+        strategy: 'direct_import',
+        describeApplicability: (context) => ({
+          applicable: context.cycleShape === 'multi_file',
+          summary:
+            context.cycleShape === 'multi_file'
+              ? 'Direct-import rewriting can be evaluated for barrel-driven multi-file cycles.'
+              : 'Direct-import rewriting only applies to barrel-driven cycles with 3+ files.',
+          signals: {
+            cycleShape: context.cycleShape,
+            cycleSize: context.uniqueFiles.length,
+          },
+        }),
+        evaluate: (context) => this.evaluateDirectImportAttempt(context.uniqueFiles),
+      },
+      {
+        strategy: 'extract_shared',
+        describeApplicability: (context) => ({
+          applicable: context.cycleShape === 'two_file',
+          summary:
+            context.cycleShape === 'two_file'
+              ? 'Shared-module extraction can be evaluated for two-file cycles.'
+              : 'Shared extraction is only supported for two-file cycles.',
+          signals: {
+            cycleShape: context.cycleShape,
+            cycleSize: context.uniqueFiles.length,
+          },
+        }),
+        evaluate: (context) => {
+          const [fileA, fileB] = context.uniqueFiles;
+          const sourceFileA = fileA ? context.sourceFiles.get(fileA) : undefined;
+          const sourceFileB = fileB ? context.sourceFiles.get(fileB) : undefined;
+
+          if (!fileA || !fileB || !sourceFileA || !sourceFileB) {
+            return this.createRejectedAttempt('extract_shared', missingCycleFilesReason, [missingCycleFilesReason], {
+              fileA: fileA ?? 'unknown',
+              fileB: fileB ?? 'unknown',
+            });
+          }
+
+          return this.evaluateExtractSharedAttempt(
+            fileA,
+            fileB,
+            sourceFileA,
+            sourceFileB,
+            context.importsAToB,
+            context.importsBToA,
+          );
+        },
+      },
+    ];
+  }
+
+  private evaluateStrategy(strategy: StrategyDefinition, context: CyclePlanningContext): StrategyAttempt {
+    const applicability = strategy.describeApplicability(context);
+    if (!applicability.applicable) {
+      return this.createNotApplicableAttempt(strategy.strategy, applicability.summary, applicability.signals);
+    }
+
+    return strategy.evaluate(context);
+  }
+
+  private determineFallbackDecision(
+    context: CyclePlanningContext,
+    attempts: StrategyAttempt[],
+  ): {
+    classification: Classification;
+    confidence: number;
+    reasons: string[];
+  } {
+    if (context.cycleShape === 'multi_file') {
+      const directImportAttempt = attempts.find((attempt) => attempt.strategy === 'direct_import');
+      if (directImportAttempt?.reasons.some((reason) => reason.includes('Barrel re-export graph is ambiguous'))) {
         return {
           classification: 'suggest_manual',
           confidence: 0.6,
@@ -83,31 +297,24 @@ export class SemanticAnalyzer {
         };
       }
 
-      /* v8 ignore next 5 */
       return {
         classification: 'unsupported',
         confidence: 1,
-        reasons: ['Only two-file cycles are supported for autofix in v1.'],
+        reasons: [
+          'Only two-file cycles are supported for autofix in v1, except for safe barrel direct-import rewrites.',
+        ],
       };
     }
 
-    const [fileA, fileB] = uniqueFiles;
-    const sfA = this.loadCycleSourceFile(fileA);
-    const sfB = this.loadCycleSourceFile(fileB);
-
-    if (!sfA || !sfB) {
-      /* v8 ignore next 5 */
+    if (this.contextHasMissingFiles(context)) {
       return {
         classification: 'unsupported',
         confidence: 1,
-        reasons: ['Files participating in the cycle could not be read or found.'],
+        reasons: [missingCycleFilesReason],
       };
     }
 
-    const importsAToB = this.findImportsTo(sfA, fileB);
-    const importsBToA = this.findImportsTo(sfB, fileA);
-
-    if (importsAToB.length === 0 && importsBToA.length === 0) {
+    if (context.importsAToB.length === 0 && context.importsBToA.length === 0) {
       return {
         classification: 'suggest_manual',
         confidence: 0.8,
@@ -115,56 +322,15 @@ export class SemanticAnalyzer {
       };
     }
 
-    const typeOnlyImports = this.buildImportTypePlan(fileA, fileB, importsAToB, importsBToA);
-    if (typeOnlyImports.length > 0) {
-      return {
-        classification: 'autofix_import_type',
-        confidence: 0.9,
-        reasons: ['Cycle can be resolved by converting concrete imports to type-only imports.'],
-        plan: {
-          kind: 'import_type',
-          imports: typeOnlyImports,
-        },
-      };
-    }
-
-    const symbolsFromBUsedInA = this.getImportedSymbolNames(importsAToB);
-    const symbolsFromAUsedInB = this.getImportedSymbolNames(importsBToA);
-    const extractionPlan = this.buildExtractSharedPlan(
-      fileA,
-      fileB,
-      sfA,
-      sfB,
-      symbolsFromAUsedInB,
-      symbolsFromBUsedInA,
-    );
-
-    if (extractionPlan) {
-      const { sourceFile, targetFile, symbols, sharedFile, preserveSourceExports } = extractionPlan;
-
-      return {
-        classification: 'autofix_extract_shared',
-        confidence: 0.8,
-        reasons: [
-          `Cycle can be resolved by extracting ${symbols.join(', ')} from ${sourceFile} into ${sharedFile} while preserving the ${sourceFile} API.`,
-        ],
-        plan: {
-          kind: 'extract_shared',
-          sourceFile,
-          targetFile,
-          symbols,
-          sharedFile,
-          preserveSourceExports,
-        },
-      };
-    }
-
-    // fallback
     return {
       classification: 'suggest_manual',
       confidence: 0.5,
       reasons: ['Implementation logic extraction requires deeper symbol analysis. Defaulting to manual review.'],
     };
+  }
+
+  private contextHasMissingFiles(context: CyclePlanningContext): boolean {
+    return [...context.sourceFiles.values()].some((sourceFile) => !sourceFile);
   }
 
   private getImportedSymbolNames(importNodes: ImportDeclaration[]): string[] {
@@ -175,6 +341,281 @@ export class SemanticAnalyzer {
       }
     }
     return [...names];
+  }
+
+  private evaluateImportTypeAttempt(
+    fileA: string,
+    fileB: string,
+    importsAToB: ImportDeclaration[],
+    importsBToA: ImportDeclaration[],
+  ): StrategyAttempt {
+    const importPlans = this.buildImportTypePlan(fileA, fileB, importsAToB, importsBToA);
+    if (importPlans.length === 0) {
+      const importEdgeCount = importsAToB.length + importsBToA.length;
+      return this.createRejectedAttempt(
+        'import_type',
+        'Imports cross the cycle, but at least one edge is used in runtime positions.',
+        importEdgeCount === 0
+          ? ['Could not statically resolve any explicit import edge that can be converted to type-only.']
+          : ['At least one import edge is used at runtime, so a type-only rewrite would be unsafe.'],
+        {
+          importEdgeCount,
+          fileA,
+          fileB,
+        },
+      );
+    }
+
+    const scoring = this.scoreImportTypePlan(importPlans);
+    return {
+      strategy: 'import_type',
+      status: 'candidate',
+      summary: `Convert ${importPlans.length} import edge(s) to type-only imports.`,
+      reasons: ['Cycle can be resolved by converting concrete imports to type-only imports.'],
+      signals: scoring.signals,
+      score: scoring.score,
+      scoreBreakdown: scoring.breakdown,
+      classification: 'autofix_import_type',
+      confidence: 0.9,
+      plan: {
+        kind: 'import_type',
+        imports: importPlans,
+      },
+    };
+  }
+
+  private evaluateExtractSharedAttempt(
+    fileA: string,
+    fileB: string,
+    sourceFileA: SourceFile,
+    sourceFileB: SourceFile,
+    importsAToB: ImportDeclaration[],
+    importsBToA: ImportDeclaration[],
+  ): StrategyAttempt {
+    const symbolsFromBUsedInA = this.getImportedSymbolNames(importsAToB);
+    const symbolsFromAUsedInB = this.getImportedSymbolNames(importsBToA);
+    const extractionPlan = this.buildExtractSharedPlan(
+      fileA,
+      fileB,
+      sourceFileA,
+      sourceFileB,
+      symbolsFromAUsedInB,
+      symbolsFromBUsedInA,
+    );
+
+    if (!extractionPlan) {
+      return this.createRejectedAttempt(
+        'extract_shared',
+        'No leaf-like exported symbol could be extracted safely without recreating the cycle.',
+        [
+          'Imported symbols are either not exported, rely on runtime state from the cycle, or use declaration shapes that are not yet supported.',
+        ],
+        {
+          symbolsFromAUsedInB: symbolsFromAUsedInB.join(',') || 'none',
+          symbolsFromBUsedInA: symbolsFromBUsedInA.join(',') || 'none',
+          fileA,
+          fileB,
+        },
+      );
+    }
+
+    const scoring = this.scoreExtractSharedPlan(extractionPlan);
+    return {
+      strategy: 'extract_shared',
+      status: 'candidate',
+      summary: `Extract ${extractionPlan.symbols.join(', ')} into ${extractionPlan.sharedFile} and preserve ${extractionPlan.sourceFile}'s exports.`,
+      reasons: [
+        `Cycle can be resolved by extracting ${extractionPlan.symbols.join(', ')} from ${extractionPlan.sourceFile} into ${extractionPlan.sharedFile} while preserving the ${extractionPlan.sourceFile} API.`,
+      ],
+      signals: scoring.signals,
+      score: scoring.score,
+      scoreBreakdown: scoring.breakdown,
+      classification: 'autofix_extract_shared',
+      confidence: 0.8,
+      plan: extractionPlan,
+    };
+  }
+
+  private evaluateDirectImportAttempt(cycleFiles: string[]): StrategyAttempt {
+    const directImportResult = this.buildDirectImportPlan(cycleFiles);
+    if (!directImportResult.plan || directImportResult.plan.length === 0) {
+      if (directImportResult.sawBarrelScenario) {
+        return this.createRejectedAttempt(
+          'direct_import',
+          'Barrel re-export graph is ambiguous or side-effectful.',
+          ['Barrel re-export graph is ambiguous or side-effectful, so a direct-import rewrite is not safe.'],
+          {
+            cycleSize: cycleFiles.length,
+          },
+        );
+      }
+
+      return this.createRejectedAttempt(
+        'direct_import',
+        'No safe barrel import rewrite was found for this cycle.',
+        ['No safe barrel import chain was detected between the cycle participants.'],
+        {
+          cycleSize: cycleFiles.length,
+        },
+      );
+    }
+
+    const scoring = this.scoreDirectImportPlan(directImportResult.plan);
+    const firstPlan = directImportResult.plan[0];
+    return {
+      strategy: 'direct_import',
+      status: 'candidate',
+      summary: `Rewrite ${directImportResult.plan.length} barrel import edge(s) to direct imports.`,
+      reasons: [
+        `Cycle can be resolved by importing ${firstPlan.symbols.join(', ')} directly from ${firstPlan.targetFile} instead of ${firstPlan.barrelFile}.`,
+      ],
+      signals: scoring.signals,
+      score: scoring.score,
+      scoreBreakdown: scoring.breakdown,
+      classification: 'autofix_direct_import',
+      confidence: 0.85,
+      plan: {
+        kind: 'direct_import',
+        imports: directImportResult.plan,
+      },
+    };
+  }
+
+  private scoreImportTypePlan(importPlans: ImportTypeFixPlan['imports']): {
+    score: number;
+    breakdown: string[];
+    signals: Record<string, StrategySignalValue>;
+  } {
+    const touchedFiles = new Set(importPlans.map((plan) => plan.sourceFile));
+    const score = this.clampScore(0.97 - Math.max(0, touchedFiles.size - 1) * 0.03);
+    return {
+      score,
+      breakdown: [
+        `base 0.97 for least-invasive rewrite`,
+        touchedFiles.size > 1 ? `-0.03 for touching ${touchedFiles.size} files` : 'no penalty for single touched file',
+      ],
+      signals: {
+        touchedFiles: touchedFiles.size,
+        importEdges: importPlans.length,
+        introducesNewFile: false,
+        preservesSourceExports: true,
+      },
+    };
+  }
+
+  private scoreDirectImportPlan(importPlans: DirectImportFixPlan['imports']): {
+    score: number;
+    breakdown: string[];
+    signals: Record<string, StrategySignalValue>;
+  } {
+    const touchedFiles = new Set(importPlans.map((plan) => plan.sourceFile));
+    const score = this.clampScore(0.89 - Math.max(0, touchedFiles.size - 1) * 0.04);
+    return {
+      score,
+      breakdown: [
+        `base 0.89 for removing a barrel hop`,
+        touchedFiles.size > 1 ? `-0.04 for touching ${touchedFiles.size} files` : 'no penalty for single touched file',
+      ],
+      signals: {
+        touchedFiles: touchedFiles.size,
+        importEdges: importPlans.length,
+        introducesNewFile: false,
+        preservesSourceExports: true,
+        bypassesBarrel: true,
+      },
+    };
+  }
+
+  private scoreExtractSharedPlan(plan: ExtractSharedFixPlan): {
+    score: number;
+    breakdown: string[];
+    signals: Record<string, StrategySignalValue>;
+  } {
+    const symbolNamedSharedFile = plan.symbols.length === 1 && path.basename(plan.sharedFile).includes(plan.symbols[0]);
+    const score = this.clampScore(
+      0.68 +
+        (plan.preserveSourceExports ? 0.08 : 0) +
+        (plan.symbols.length === 1 ? 0.06 : 0) +
+        (symbolNamedSharedFile ? 0.04 : 0) -
+        Math.max(0, plan.symbols.length - 1) * 0.03,
+    );
+    return {
+      score,
+      breakdown: [
+        'base 0.68 for introducing a shared module',
+        plan.preserveSourceExports ? '+0.08 for preserving the source module API' : 'no API-preservation bonus',
+        plan.symbols.length === 1
+          ? '+0.06 for single-symbol extraction'
+          : `-${Math.max(0, plan.symbols.length - 1) * 0.03} for extracting multiple symbols`,
+        symbolNamedSharedFile ? '+0.04 for a symbol-driven shared filename' : 'no filename clarity bonus',
+      ],
+      signals: {
+        touchedFiles: 3,
+        symbolCount: plan.symbols.length,
+        introducesNewFile: true,
+        preservesSourceExports: plan.preserveSourceExports,
+        sharedFile: plan.sharedFile,
+        sourceFile: plan.sourceFile,
+        targetFile: plan.targetFile,
+      },
+    };
+  }
+
+  private selectBestAttempt(attempts: StrategyAttempt[]): StrategyAttempt | undefined {
+    let bestAttempt: StrategyAttempt | undefined;
+
+    for (const attempt of attempts) {
+      if (attempt.status !== 'candidate') {
+        continue;
+      }
+
+      if (!bestAttempt) {
+        bestAttempt = attempt;
+        continue;
+      }
+
+      const scoreDelta = (attempt.score ?? 0) - (bestAttempt.score ?? 0);
+      const confidenceDelta = (attempt.confidence ?? 0) - (bestAttempt.confidence ?? 0);
+
+      if (scoreDelta > 0 || (scoreDelta === 0 && confidenceDelta > 0)) {
+        bestAttempt = attempt;
+      }
+    }
+
+    return bestAttempt;
+  }
+
+  private createNotApplicableAttempt(
+    strategy: PlanningStrategy,
+    summary: string,
+    signals: Record<string, StrategySignalValue>,
+  ): StrategyAttempt {
+    return {
+      strategy,
+      status: 'not_applicable',
+      summary,
+      reasons: [summary],
+      signals,
+    };
+  }
+
+  private createRejectedAttempt(
+    strategy: PlanningStrategy,
+    summary: string,
+    reasons: string[],
+    signals: Record<string, StrategySignalValue>,
+  ): StrategyAttempt {
+    return {
+      strategy,
+      status: 'rejected',
+      summary,
+      reasons,
+      signals,
+    };
+  }
+
+  private clampScore(value: number): number {
+    return Math.max(0, Math.min(1, Number(value.toFixed(2))));
   }
 
   private isExtractable(sourceFile: SourceFile, symbolNames: string[], cycleFiles: string[]): boolean {

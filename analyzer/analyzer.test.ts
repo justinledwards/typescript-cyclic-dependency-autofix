@@ -201,4 +201,40 @@ describe('analyzeRepository', () => {
     const result = await analyzeRepository('/some/path');
     expect(result).toHaveLength(2);
   });
+
+  it('normalizes dependency-cruiser paths back to repo-relative paths', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/repos/autofix/worktrees/issue-123');
+
+    mockCruise.mockResolvedValue({
+      output: {
+        summary: {
+          violations: [
+            {
+              type: 'cycle',
+              from: '../../../openclaw/src/a.ts',
+              to: '../../../openclaw/src/b.ts',
+              rule: { name: 'no-circular', severity: 'warn' },
+              cycle: [{ name: '../../../openclaw/src/b.ts' }, { name: '../../../openclaw/src/a.ts' }],
+            },
+          ],
+          error: 0,
+          warn: 1,
+          info: 0,
+          ignore: 0,
+          totalCruised: 2,
+          totalDependenciesCruised: 2,
+          optionsUsed: {},
+        },
+        modules: [],
+      },
+      exitCode: 0,
+    } as unknown as IReporterOutput);
+
+    const result = await analyzeRepository('/repos/openclaw');
+
+    expect(result).toHaveLength(1);
+    expect(result[0].path).toEqual(['src/a.ts', 'src/b.ts', 'src/a.ts']);
+
+    cwdSpy.mockRestore();
+  });
 });

@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { analyzeRepository } from '../analyzer/analyzer.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
 import { scanRepository } from './scanner.js';
@@ -18,6 +19,42 @@ export function createProgram(): Command {
         console.log(`Scan completed successfully (Scan ID: ${result.scanId}). Found ${result.cyclesFound} cycles.`);
       } catch (error) {
         console.error(`Failed to scan repository ${repo}:`, error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('explain <repo>')
+    .description('Explain the planner output for each detected cycle in a target repository')
+    .action(async (repo: string) => {
+      try {
+        const cycles = await analyzeRepository(repo);
+        console.log(
+          JSON.stringify(
+            {
+              repo,
+              cycleCount: cycles.length,
+              cycles: cycles.map((cycle, index) => ({
+                id: index + 1,
+                path: cycle.path,
+                analysis: cycle.analysis
+                  ? {
+                      classification: cycle.analysis.classification,
+                      confidence: cycle.analysis.confidence,
+                      reasons: cycle.analysis.reasons,
+                      plan: cycle.analysis.plan,
+                      upstreamabilityScore: cycle.analysis.upstreamabilityScore,
+                      planner: cycle.analysis.planner,
+                    }
+                  : undefined,
+              })),
+            },
+            null,
+            2,
+          ),
+        );
+      } catch (error) {
+        console.error(`Failed to explain repository ${repo}:`, error);
         process.exit(1);
       }
     });

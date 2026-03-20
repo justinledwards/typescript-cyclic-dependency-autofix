@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { cruise } from 'dependency-cruiser';
 import { type SemanticAnalysisResult, SemanticAnalyzer } from './semantic.js';
 
@@ -8,8 +9,10 @@ export interface CircularDependency {
 }
 
 export async function analyzeRepository(repoPath: string): Promise<CircularDependency[]> {
+  const resolvedRepoPath = path.resolve(repoPath);
+
   try {
-    const result = await cruise([repoPath], {
+    const result = await cruise([resolvedRepoPath], {
       exclude: {
         path: ['node_modules', 'dist', 'coverage', 'build', String.raw`\.git`, String.raw`\.next`, String.raw`\.cache`],
       },
@@ -30,7 +33,7 @@ export async function analyzeRepository(repoPath: string): Promise<CircularDepen
     });
 
     const circularDependencies: CircularDependency[] = [];
-    const semanticAnalyzer = new SemanticAnalyzer(repoPath);
+    const semanticAnalyzer = new SemanticAnalyzer(resolvedRepoPath);
 
     const output = result.output;
     if (typeof output === 'string') {
@@ -43,9 +46,15 @@ export async function analyzeRepository(repoPath: string): Promise<CircularDepen
           const cyclePath: string[] = [];
           const violationWithCycle = violation as { cycle?: Array<{ name: string }> } & typeof violation;
           if (violation.type === 'cycle' && violationWithCycle.cycle) {
-            cyclePath.push(violation.from, ...violationWithCycle.cycle.map((c) => c.name));
+            cyclePath.push(
+              normalizeModulePath(resolvedRepoPath, violation.from),
+              ...violationWithCycle.cycle.map((c) => normalizeModulePath(resolvedRepoPath, c.name)),
+            );
           } else {
-            cyclePath.push(violation.from, violation.to);
+            cyclePath.push(
+              normalizeModulePath(resolvedRepoPath, violation.from),
+              normalizeModulePath(resolvedRepoPath, violation.to),
+            );
           }
 
           circularDependencies.push({
@@ -62,4 +71,28 @@ export async function analyzeRepository(repoPath: string): Promise<CircularDepen
     console.error('Error analyzing repository:', error);
     throw error;
   }
+}
+
+function normalizeModulePath(repoPath: string, modulePath: string): string {
+  const normalizedModulePath = modulePath.split(path.sep).join('/');
+  if (path.isAbsolute(modulePath)) {
+    return path.relative(repoPath, modulePath).split(path.sep).join('/');
+  }
+
+  const repoRelativeCandidate = path.resolve(repoPath, modulePath);
+  if (isWithinRepo(repoPath, repoRelativeCandidate)) {
+    return path.relative(repoPath, repoRelativeCandidate).split(path.sep).join('/');
+  }
+
+  const cwdRelativeCandidate = path.resolve(process.cwd(), modulePath);
+  if (isWithinRepo(repoPath, cwdRelativeCandidate)) {
+    return path.relative(repoPath, cwdRelativeCandidate).split(path.sep).join('/');
+  }
+
+  return normalizedModulePath;
+}
+
+function isWithinRepo(repoPath: string, candidatePath: string): boolean {
+  const relativePath = path.relative(repoPath, candidatePath);
+  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
 }

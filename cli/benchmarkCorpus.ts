@@ -10,6 +10,7 @@ import {
 } from '../benchmarks/repo-corpus.js';
 import { getDb } from '../db/index.js';
 import { type BenchmarkCaseContext, type BenchmarkMiningResult, mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
+import { profileRepository, type RepositoryProfile } from './repoProfile.js';
 
 export interface BenchmarkCorpusMiningOptions {
   database?: DatabaseType;
@@ -28,6 +29,7 @@ export interface BenchmarkCorpusDependencies {
   mineBenchmarkCasesFromRepo?: typeof mineBenchmarkCasesFromRepo;
   findLocalCheckout?: typeof findLocalCheckout;
   cloneRepository?: typeof cloneRepository;
+  profileRepository?: typeof profileRepository;
 }
 
 export interface BenchmarkCorpusRepositoryResult {
@@ -35,6 +37,7 @@ export interface BenchmarkCorpusRepositoryResult {
   groups: BenchmarkCorpusGroup[];
   patterns: string[];
   repoPath: string | null;
+  profile?: RepositoryProfile;
   status: 'mined' | 'cloned' | 'skipped';
   reason?: string;
   mining?: BenchmarkMiningResult;
@@ -74,6 +77,7 @@ export async function mineBenchmarkCasesFromCorpus(
   const mineRepo = options.dependencies?.mineBenchmarkCasesFromRepo ?? mineBenchmarkCasesFromRepo;
   const localCheckoutResolver = options.dependencies?.findLocalCheckout ?? findLocalCheckout;
   const cloneRepo = options.dependencies?.cloneRepository ?? cloneRepository;
+  const profileRepo = options.dependencies?.profileRepository ?? profileRepository;
   const entries = selectCorpusEntries(
     options.entries ?? BENCHMARK_REPO_CORPUS,
     options.onlyRepositories,
@@ -92,10 +96,11 @@ export async function mineBenchmarkCasesFromCorpus(
   let insertedCases = 0;
 
   for (const entry of entries) {
-    const caseContext = buildCaseContext(entry);
     const localPath = localCheckoutResolver(entry, searchRootsWithWorkspace);
     if (localPath) {
+      const profile = await safeProfileRepository(localPath, profileRepo);
       try {
+        const caseContext = buildCaseContext(entry, profile);
         const mining = await mineRepo(localPath, {
           database,
           repositoryLabel: entry.slug,
@@ -113,6 +118,7 @@ export async function mineBenchmarkCasesFromCorpus(
           groups: entry.groups,
           patterns: entry.patterns,
           repoPath: localPath,
+          profile,
           status: 'mined',
           mining,
         });
@@ -123,6 +129,7 @@ export async function mineBenchmarkCasesFromCorpus(
           groups: entry.groups,
           patterns: entry.patterns,
           repoPath: localPath,
+          profile,
           status: 'skipped',
           reason: stringifyError(error),
         });
@@ -143,8 +150,11 @@ export async function mineBenchmarkCasesFromCorpus(
       continue;
     }
 
+    let profile: RepositoryProfile | undefined;
     try {
       const clonedPath = await cloneRepo(entry, workspaceDir);
+      profile = await safeProfileRepository(clonedPath, profileRepo);
+      const caseContext = buildCaseContext(entry, profile);
       const mining = await mineRepo(clonedPath, {
         database,
         repositoryLabel: entry.slug,
@@ -163,6 +173,7 @@ export async function mineBenchmarkCasesFromCorpus(
         groups: entry.groups,
         patterns: entry.patterns,
         repoPath: clonedPath,
+        profile,
         status: 'cloned',
         mining,
       });
@@ -173,6 +184,7 @@ export async function mineBenchmarkCasesFromCorpus(
         groups: entry.groups,
         patterns: entry.patterns,
         repoPath: null,
+        profile,
         status: 'skipped',
         reason: stringifyError(error),
       });
@@ -270,13 +282,24 @@ async function cloneRepository(entry: BenchmarkCorpusEntry, workspaceDir: string
   return destination;
 }
 
-function buildCaseContext(entry: BenchmarkCorpusEntry): BenchmarkCaseContext {
+function buildCaseContext(
+  entry: BenchmarkCorpusEntry,
+  repositoryProfile?: BenchmarkCaseContext['repositoryProfile'],
+): BenchmarkCaseContext {
   return {
     corpusRepository: entry.slug,
     corpusGroups: entry.groups,
     corpusPatterns: entry.patterns,
     corpusDescription: entry.description,
+    repositoryProfile,
   };
+}
+
+function safeProfileRepository(
+  repoPath: string,
+  profileRepo: typeof profileRepository,
+): Promise<RepositoryProfile | undefined> {
+  return profileRepo(repoPath).catch(() => void 0);
 }
 
 function buildGroupSummary(

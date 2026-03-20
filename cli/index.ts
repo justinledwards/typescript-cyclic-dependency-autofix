@@ -4,6 +4,7 @@ import { mineBenchmarkCasesFromCorpus } from './benchmarkCorpus.js';
 import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
+import { profileRepository } from './repoProfile.js';
 import { scanRepository } from './scanner.js';
 
 export function createProgram(): Command {
@@ -118,6 +119,19 @@ export function createProgram(): Command {
         );
       } catch (error) {
         console.error(`Failed to explain repository ${repo}:`, error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('profile:repo <repo>')
+    .description('Profile a repository checkout and infer validation commands')
+    .action(async (repo: string) => {
+      try {
+        const profile = await profileRepository(repo);
+        console.log(JSON.stringify(profile, null, 2));
+      } catch (error) {
+        console.error(`Failed to profile repository ${repo}:`, error);
         process.exit(1);
       }
     });

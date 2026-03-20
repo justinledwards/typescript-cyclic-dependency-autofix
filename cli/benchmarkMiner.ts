@@ -2,6 +2,7 @@ import path from 'node:path';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import simpleGit from 'simple-git';
 import { createStatements, getDb } from '../db/index.js';
+import type { RepositoryProfile } from './repoProfile.js';
 
 const DEFAULT_SEARCH_TERMS = [
   'circular dependency',
@@ -47,6 +48,15 @@ export interface BenchmarkCaseContext {
   corpusGroups?: string[];
   corpusPatterns?: string[];
   corpusDescription?: string;
+  repositoryProfile?: BenchmarkRepositoryProfileContext;
+}
+
+export interface BenchmarkRepositoryProfileContext {
+  packageManager: RepositoryProfile['packageManager'];
+  workspaceMode: RepositoryProfile['workspaceMode'];
+  lockfiles: string[];
+  scriptNames: string[];
+  validationCommands: string[];
 }
 
 export interface GitAdapter {
@@ -287,6 +297,13 @@ function buildBenchmarkNote(
   if (context?.corpusDescription) {
     contextParts.push(`corpus description: ${context.corpusDescription}`);
   }
+  if (context?.repositoryProfile) {
+    const profile = context.repositoryProfile;
+    contextParts.push(
+      `repository profile: ${profile.packageManager}/${profile.workspaceMode}`,
+      `validation commands: ${profile.validationCommands.join(' | ') || 'none'}`,
+    );
+  }
 
   return [
     `matched terms: ${matchedTerms.join(', ')}`,
@@ -296,7 +313,7 @@ function buildBenchmarkNote(
   ].join('; ');
 }
 
-function buildBenchmarkContextSignals(context?: BenchmarkCaseContext): Record<string, string | string[] | undefined> {
+function buildBenchmarkContextSignals(context?: BenchmarkCaseContext): Record<string, unknown> {
   if (!context) {
     return {};
   }
@@ -306,6 +323,15 @@ function buildBenchmarkContextSignals(context?: BenchmarkCaseContext): Record<st
     corpus_groups: context.corpusGroups,
     corpus_patterns: context.corpusPatterns,
     corpus_description: context.corpusDescription,
+    repository_profile: context.repositoryProfile
+      ? {
+          package_manager: context.repositoryProfile.packageManager,
+          workspace_mode: context.repositoryProfile.workspaceMode,
+          lockfiles: context.repositoryProfile.lockfiles,
+          script_names: context.repositoryProfile.scriptNames,
+          validation_commands: context.repositoryProfile.validationCommands,
+        }
+      : undefined,
   };
 }
 

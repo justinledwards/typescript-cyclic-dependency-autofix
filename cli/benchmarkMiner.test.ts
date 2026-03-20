@@ -175,6 +175,13 @@ describe('mineBenchmarkCasesFromRepo', () => {
         corpusGroups: ['calibration'],
         corpusPatterns: ['extract_shared'],
         corpusDescription: 'Calibration repo',
+        repositoryProfile: {
+          packageManager: 'pnpm',
+          workspaceMode: 'workspace',
+          lockfiles: ['pnpm-lock.yaml'],
+          scriptNames: ['build', 'lint', 'test', 'typecheck'],
+          validationCommands: ['pnpm typecheck', 'pnpm lint', 'pnpm test', 'pnpm build'],
+        },
       },
     });
 
@@ -189,9 +196,18 @@ describe('mineBenchmarkCasesFromRepo', () => {
       corpus_groups: ['calibration'],
       corpus_patterns: ['extract_shared'],
       corpus_description: 'Calibration repo',
+      repository_profile: {
+        package_manager: 'pnpm',
+        workspace_mode: 'workspace',
+        lockfiles: ['pnpm-lock.yaml'],
+        script_names: ['build', 'lint', 'test', 'typecheck'],
+        validation_commands: ['pnpm typecheck', 'pnpm lint', 'pnpm test', 'pnpm build'],
+      },
     });
     expect(entry.notes).toContain('corpus repo: openclaw/openclaw');
     expect(entry.notes).toContain('corpus groups: calibration');
+    expect(entry.notes).toContain('repository profile: pnpm/workspace');
+    expect(entry.notes).toContain('validation commands: pnpm typecheck | pnpm lint | pnpm test | pnpm build');
 
     db.close();
   });

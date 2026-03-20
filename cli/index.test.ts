@@ -7,6 +7,7 @@ import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
 import { createProgram } from './index.js';
+import { profileRepository } from './repoProfile.js';
 import { scanRepository } from './scanner.js';
 
 const fixtureRoot = vi.hoisted(() => `${process.cwd()}/.test-fixtures`);
@@ -160,6 +161,18 @@ vi.mock('./createPullRequest.js', () => ({
   }),
 }));
 
+vi.mock('./repoProfile.js', () => ({
+  profileRepository: vi.fn().mockResolvedValue({
+    repoPath: '/some/repo',
+    packageJsonPath: '/some/repo/package.json',
+    packageManager: 'pnpm',
+    workspaceMode: 'workspace',
+    lockfiles: ['pnpm-lock.yaml'],
+    scriptNames: ['build', 'lint', 'test', 'typecheck'],
+    validationCommands: ['pnpm typecheck', 'pnpm lint', 'pnpm test', 'pnpm build'],
+  }),
+}));
+
 describe('CLI', () => {
   it('creates a program with the correct name and version', () => {
     const program = createProgram();
@@ -259,6 +272,33 @@ describe('CLI', () => {
               },
             },
           ],
+        },
+        null,
+        2,
+      ),
+    );
+
+    consoleSpy.mockRestore();
+  });
+
+  it('profile:repo command prints repository profile as JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'profile:repo', '/some/repo']);
+
+    expect(vi.mocked(profileRepository)).toHaveBeenCalledWith('/some/repo');
+    expect(consoleSpy).toHaveBeenCalledWith(
+      JSON.stringify(
+        {
+          repoPath: '/some/repo',
+          packageJsonPath: '/some/repo/package.json',
+          packageManager: 'pnpm',
+          workspaceMode: 'workspace',
+          lockfiles: ['pnpm-lock.yaml'],
+          scriptNames: ['build', 'lint', 'test', 'typecheck'],
+          validationCommands: ['pnpm typecheck', 'pnpm lint', 'pnpm test', 'pnpm build'],
         },
         null,
         2,

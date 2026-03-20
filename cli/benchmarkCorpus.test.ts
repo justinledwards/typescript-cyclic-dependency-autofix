@@ -51,10 +51,27 @@ describe('mineBenchmarkCasesFromCorpus', () => {
       },
     ];
 
+    const profile = {
+      repoPath: path.join(fixtureRoot, 'corpus', 'openclaw'),
+      packageJsonPath: path.join(fixtureRoot, 'corpus', 'openclaw', 'package.json'),
+      packageManager: 'pnpm' as const,
+      workspaceMode: 'workspace' as const,
+      lockfiles: ['pnpm-lock.yaml'],
+      scriptNames: ['build', 'lint', 'test', 'typecheck'],
+      validationCommands: ['pnpm typecheck', 'pnpm lint', 'pnpm test', 'pnpm build'],
+    };
+
     const mineRepo = vi.fn(async (repoPath: string, options: { repositoryLabel?: string; caseContext?: unknown }) => {
       expect(options.repositoryLabel).toBeDefined();
       expect(options.caseContext).toMatchObject({
         corpusRepository: options.repositoryLabel,
+        repositoryProfile: {
+          packageManager: 'pnpm',
+          workspaceMode: 'workspace',
+          lockfiles: ['pnpm-lock.yaml'],
+          scriptNames: ['build', 'lint', 'test', 'typecheck'],
+          validationCommands: ['pnpm typecheck', 'pnpm lint', 'pnpm test', 'pnpm build'],
+        },
       });
 
       const mining: BenchmarkMiningResult = {
@@ -79,6 +96,10 @@ describe('mineBenchmarkCasesFromCorpus', () => {
         findLocalCheckout: (entry) =>
           entry.slug === 'openclaw/openclaw' ? path.join(fixtureRoot, 'corpus', 'openclaw') : null,
         cloneRepository: vi.fn(),
+        profileRepository: vi.fn(async (repoPath: string) => {
+          expect(repoPath).toBe(path.join(fixtureRoot, 'corpus', 'openclaw'));
+          return profile;
+        }),
       },
     });
 
@@ -97,6 +118,7 @@ describe('mineBenchmarkCasesFromCorpus', () => {
         groups: ['calibration'],
         patterns: ['extract_shared'],
         repoPath: path.join(fixtureRoot, 'corpus', 'openclaw'),
+        profile,
         status: 'mined',
         mining: expect.objectContaining({
           repository: 'openclaw/openclaw',
@@ -165,6 +187,16 @@ describe('mineBenchmarkCasesFromCorpus', () => {
       },
     ];
 
+    const profile = {
+      repoPath: path.join(fixtureRoot, 'worktrees', 'anomalyco', 'opencode'),
+      packageJsonPath: path.join(fixtureRoot, 'worktrees', 'anomalyco', 'opencode', 'package.json'),
+      packageManager: 'bun' as const,
+      workspaceMode: 'single-package' as const,
+      lockfiles: ['bun.lock'],
+      scriptNames: ['build', 'test'],
+      validationCommands: ['bun run test', 'bun run build'],
+    };
+
     const cloneRepository = vi.fn(async (_entry: BenchmarkCorpusEntry, workspaceDir: string) => {
       expect(workspaceDir).toBe(path.join(fixtureRoot, 'worktrees'));
       return path.join(workspaceDir, 'anomalyco', 'opencode');
@@ -188,6 +220,10 @@ describe('mineBenchmarkCasesFromCorpus', () => {
         mineBenchmarkCasesFromRepo: mineRepo as unknown as typeof mineBenchmarkCasesFromRepo,
         findLocalCheckout: () => null,
         cloneRepository,
+        profileRepository: vi.fn(async (repoPath: string) => {
+          expect(repoPath).toBe(path.join(fixtureRoot, 'worktrees', 'anomalyco', 'opencode'));
+          return profile;
+        }),
       },
     });
 
@@ -208,7 +244,57 @@ describe('mineBenchmarkCasesFromCorpus', () => {
     expect(result.repositoryResults[0]).toMatchObject({
       slug: 'anomalyco/opencode',
       repoPath: path.join(fixtureRoot, 'worktrees', 'anomalyco', 'opencode'),
+      profile,
       status: 'cloned',
+    });
+
+    db.close();
+  });
+
+  it('continues mining when repository profiling fails', async () => {
+    const db = createDatabase(':memory:');
+    initSchema(db);
+
+    const entries: BenchmarkCorpusEntry[] = [
+      {
+        slug: 'openclaw/openclaw',
+        groups: ['calibration'],
+        description: 'Calibration repo',
+        patterns: ['extract_shared'],
+      },
+    ];
+
+    const mineRepo = vi.fn(async (repoPath: string, options: { repositoryLabel?: string; caseContext?: unknown }) => ({
+      repository: options.repositoryLabel ?? 'unknown',
+      repoPath,
+      scannedCommits: 3,
+      matchedCommits: 1,
+      insertedCases: 1,
+      matchedTerms: ['circular dependency'],
+    }));
+
+    const result = await mineBenchmarkCasesFromCorpus({
+      database: db,
+      entries,
+      searchRoots: [path.join(fixtureRoot, 'corpus')],
+      cloneMissing: false,
+      dependencies: {
+        mineBenchmarkCasesFromRepo: mineRepo as unknown as typeof mineBenchmarkCasesFromRepo,
+        findLocalCheckout: (entry) =>
+          entry.slug === 'openclaw/openclaw' ? path.join(fixtureRoot, 'corpus', 'openclaw') : null,
+        cloneRepository: vi.fn(),
+        profileRepository: vi.fn(async () => {
+          throw new Error('broken package.json');
+        }),
+      },
+    });
+
+    expect(mineRepo).toHaveBeenCalledTimes(1);
+    expect(result.repositoryResults[0]).toMatchObject({
+      slug: 'openclaw/openclaw',
+      repoPath: path.join(fixtureRoot, 'corpus', 'openclaw'),
+      profile: undefined,
+      status: 'mined',
     });
 
     db.close();

@@ -11,6 +11,7 @@ import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
 import { profileRepository } from './repoProfile.js';
 import { scanRepository } from './scanner.js';
+import { formatSmokeSuiteResult, loadSmokeFixtures, runSmokeSuite } from './smoke.js';
 
 export function createProgram(): Command {
   const program = new Command();
@@ -27,6 +28,27 @@ export function createProgram(): Command {
         console.log(`Scan completed successfully (Scan ID: ${result.scanId}). Found ${result.cyclesFound} cycles.`);
       } catch (error) {
         console.error(`Failed to scan repository ${repo}:`, error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('smoke [fixturesPath]')
+    .description('Run the real-repo smoke suite from a fixture list')
+    .option('--worktrees-dir <path>', 'Directory to use for smoke suite worktrees')
+    .action(async (fixturesPath = 'smoke.fixtures.json', options: { worktreesDir?: string }) => {
+      try {
+        const fixtures = await loadSmokeFixtures(fixturesPath);
+        const result = await runSmokeSuite(fixtures, {
+          worktreesDir: options.worktreesDir,
+        });
+        console.log(formatSmokeSuiteResult(result));
+
+        if (result.failed > 0) {
+          process.exit(1);
+        }
+      } catch (error) {
+        console.error(`Failed to run smoke suite from ${fixturesPath}:`, error);
         process.exit(1);
       }
     });

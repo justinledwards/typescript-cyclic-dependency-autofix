@@ -1,16 +1,110 @@
-import os from 'node:os';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { analyzeRepository } from '../analyzer/analyzer.js';
+import { mineBenchmarkCasesFromCorpus } from './benchmarkCorpus.js';
+import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
 import { createProgram } from './index.js';
+import { profileRepository } from './repoProfile.js';
 import { scanRepository } from './scanner.js';
 
-const exportedDir = path.join(os.tmpdir(), 'patches');
+const fixtureRoot = vi.hoisted(() => `${process.cwd()}/.test-fixtures`);
+const exportedDir = vi.hoisted(() => `${process.cwd()}/.test-fixtures/patches`);
+mkdirSync(fixtureRoot, { recursive: true });
 
 vi.mock('./scanner.js', () => ({
   scanRepository: vi.fn().mockResolvedValue({ scanId: 999, cyclesFound: 2 }),
+}));
+
+vi.mock('./benchmarkMiner.js', () => ({
+  mineBenchmarkCasesFromRepo: vi.fn().mockResolvedValue({
+    repository: 'acme/widget',
+    repoPath: '/some/repo',
+    scannedCommits: 12,
+    matchedCommits: 3,
+    insertedCases: 2,
+    matchedTerms: ['circular dependency', 'import type'],
+  }),
+}));
+
+vi.mock('./benchmarkCorpus.js', () => ({
+  mineBenchmarkCasesFromCorpus: vi.fn().mockResolvedValue({
+    corpusSize: 2,
+    repositoriesMined: 1,
+    repositoriesCloned: 0,
+    repositoriesSkipped: 1,
+    scannedCommits: 4,
+    matchedCommits: 2,
+    insertedCases: 1,
+    workspaceDir: path.join(fixtureRoot, 'worktrees', 'benchmark-corpus'),
+    searchRoots: [path.join(fixtureRoot, 'corpus')],
+    repositoryResults: [
+      {
+        slug: 'openclaw/openclaw',
+        groups: ['calibration'],
+        patterns: ['extract_shared'],
+        repoPath: path.join(fixtureRoot, 'corpus', 'openclaw'),
+        status: 'mined',
+        mining: {
+          repository: 'openclaw/openclaw',
+          repoPath: path.join(fixtureRoot, 'corpus', 'openclaw'),
+          scannedCommits: 4,
+          matchedCommits: 2,
+          insertedCases: 1,
+          matchedTerms: ['circular dependency'],
+        },
+      },
+      {
+        slug: 'microsoft/vscode',
+        groups: ['stable-core'],
+        patterns: ['direct_import'],
+        repoPath: null,
+        status: 'skipped',
+        reason: 'No local checkout matched the configured search roots',
+      },
+    ],
+    groupSummary: [
+      {
+        group: 'calibration',
+        repositories: 1,
+        minedRepositories: 1,
+        skippedRepositories: 0,
+        insertedCases: 1,
+      },
+      {
+        group: 'stable-core',
+        repositories: 1,
+        minedRepositories: 0,
+        skippedRepositories: 1,
+        insertedCases: 0,
+      },
+      {
+        group: 'watchlist',
+        repositories: 0,
+        minedRepositories: 0,
+        skippedRepositories: 0,
+        insertedCases: 0,
+      },
+    ],
+    patternSummary: [
+      {
+        pattern: 'direct_import',
+        repositories: 1,
+        minedRepositories: 0,
+        skippedRepositories: 1,
+        insertedCases: 0,
+      },
+      {
+        pattern: 'extract_shared',
+        repositories: 1,
+        minedRepositories: 1,
+        skippedRepositories: 0,
+        insertedCases: 1,
+      },
+    ],
+  }),
 }));
 
 vi.mock('../analyzer/analyzer.js', () => ({
@@ -48,9 +142,9 @@ vi.mock('../analyzer/analyzer.js', () => ({
 
 vi.mock('./exportPatches.js', () => ({
   exportApprovedPatches: vi.fn().mockResolvedValue({
-    outputDir: path.join(os.tmpdir(), 'patches'),
+    outputDir: exportedDir,
     exportedCount: 2,
-    files: [path.join(os.tmpdir(), 'patches', 'a.patch'), path.join(os.tmpdir(), 'patches', 'b.patch')],
+    files: [path.join(exportedDir, 'a.patch'), path.join(exportedDir, 'b.patch')],
   }),
 }));
 
@@ -64,6 +158,18 @@ vi.mock('./createPullRequest.js', () => ({
     title: 'Break circular dependency',
     body: 'Closes #42',
     prUrl: 'https://github.com/acme/widget/pull/123',
+  }),
+}));
+
+vi.mock('./repoProfile.js', () => ({
+  profileRepository: vi.fn().mockResolvedValue({
+    repoPath: '/some/repo',
+    packageJsonPath: '/some/repo/package.json',
+    packageManager: 'pnpm',
+    workspaceMode: 'workspace',
+    lockfiles: ['pnpm-lock.yaml'],
+    scriptNames: ['build', 'lint', 'test', 'typecheck'],
+    validationCommands: ['pnpm typecheck', 'pnpm lint', 'pnpm test', 'pnpm build'],
   }),
 }));
 
@@ -83,6 +189,23 @@ describe('CLI', () => {
 
     expect(consoleSpy).toHaveBeenCalledWith('Scanning repository: /some/repo');
     expect(consoleSpy).toHaveBeenCalledWith('Scan completed successfully (Scan ID: 999). Found 2 cycles.');
+    consoleSpy.mockRestore();
+  });
+
+  it('mine:repo-history command logs repository path and calls miner', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'mine:repo-history', '/some/repo', '--label', 'acme/widget']);
+
+    expect(consoleSpy).toHaveBeenCalledWith('Mining benchmark cases from repository: /some/repo');
+    expect(consoleSpy).toHaveBeenCalledWith('Mined 2 benchmark case(s) from 3 matching commit(s) in acme/widget.');
+    expect(vi.mocked(mineBenchmarkCasesFromRepo)).toHaveBeenCalledWith('/some/repo', {
+      repositoryLabel: 'acme/widget',
+      maxCommits: undefined,
+      maxMatches: undefined,
+    });
     consoleSpy.mockRestore();
   });
 
@@ -158,6 +281,33 @@ describe('CLI', () => {
     consoleSpy.mockRestore();
   });
 
+  it('profile:repo command prints repository profile as JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'profile:repo', '/some/repo']);
+
+    expect(vi.mocked(profileRepository)).toHaveBeenCalledWith('/some/repo');
+    expect(consoleSpy).toHaveBeenCalledWith(
+      JSON.stringify(
+        {
+          repoPath: '/some/repo',
+          packageJsonPath: '/some/repo/package.json',
+          packageManager: 'pnpm',
+          workspaceMode: 'workspace',
+          lockfiles: ['pnpm-lock.yaml'],
+          scriptNames: ['build', 'lint', 'test', 'typecheck'],
+          validationCommands: ['pnpm typecheck', 'pnpm lint', 'pnpm test', 'pnpm build'],
+        },
+        null,
+        2,
+      ),
+    );
+
+    consoleSpy.mockRestore();
+  });
+
   it('scan:all command logs scanning message', () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const program = createProgram();
@@ -212,6 +362,40 @@ describe('CLI', () => {
     consoleSpy.mockRestore();
   });
 
+  it('mine:corpus command logs JSON summary and calls corpus miner', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'mine:corpus',
+      '--only',
+      'openclaw/openclaw',
+      '--search-root',
+      path.join(fixtureRoot, 'corpus'),
+      '--clone-missing',
+    ]);
+
+    expect(vi.mocked(mineBenchmarkCasesFromCorpus)).toHaveBeenCalledWith({
+      onlyRepositories: ['openclaw/openclaw'],
+      searchRoots: [path.join(fixtureRoot, 'corpus')],
+      workspaceDir: undefined,
+      cloneMissing: true,
+      limit: undefined,
+      maxCommits: undefined,
+      maxMatches: undefined,
+    });
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      corpusSize: 2,
+      repositoriesMined: 1,
+      repositoriesSkipped: 1,
+      insertedCases: 1,
+    });
+    consoleSpy.mockRestore();
+  });
+
   it('create:pr command exits on invalid issue number', async () => {
     const consoleErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined as never) as typeof process.exit);
@@ -242,11 +426,13 @@ describe('CLI', () => {
     exitSpy.mockRestore();
   });
 
-  it('has all six subcommands registered', () => {
+  it('has all eight subcommands registered', () => {
     const program = createProgram();
     const commandNames = program.commands.map((cmd) => cmd.name());
     expect(commandNames).toContain('scan');
     expect(commandNames).toContain('explain');
+    expect(commandNames).toContain('mine:corpus');
+    expect(commandNames).toContain('mine:repo-history');
     expect(commandNames).toContain('scan:all');
     expect(commandNames).toContain('retry:failed');
     expect(commandNames).toContain('create:pr');

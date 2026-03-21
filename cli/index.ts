@@ -1,7 +1,10 @@
 import { Command } from 'commander';
 import { analyzeRepository } from '../analyzer/analyzer.js';
+import { mineBenchmarkCasesFromCorpus } from './benchmarkCorpus.js';
+import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
+import { profileRepository } from './repoProfile.js';
 import { scanRepository } from './scanner.js';
 
 export function createProgram(): Command {
@@ -19,6 +22,67 @@ export function createProgram(): Command {
         console.log(`Scan completed successfully (Scan ID: ${result.scanId}). Found ${result.cyclesFound} cycles.`);
       } catch (error) {
         console.error(`Failed to scan repository ${repo}:`, error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('mine:corpus')
+    .description('Mine benchmark cases across the curated TypeScript repository corpus')
+    .option('--only <slug>', 'Restrict mining to a specific corpus repository slug or repo name', collectString, [])
+    .option('--search-root <path>', 'Additional root path to search for local repository checkouts', collectString, [])
+    .option('--workspace <path>', 'Directory to clone missing repositories into before mining')
+    .option('--clone-missing', 'Clone missing repositories into the workspace before mining')
+    .option('--limit <count>', 'Limit how many corpus repositories are processed', parseInteger)
+    .option('--max-commits <count>', 'Limit how many commits are scanned per repository', parseInteger)
+    .option('--max-matches <count>', 'Limit how many benchmark cases are stored per repository', parseInteger)
+    .action(
+      async (options: {
+        only: string[];
+        searchRoot: string[];
+        workspace?: string;
+        cloneMissing?: boolean;
+        limit?: number;
+        maxCommits?: number;
+        maxMatches?: number;
+      }) => {
+        try {
+          const result = await mineBenchmarkCasesFromCorpus({
+            onlyRepositories: options.only,
+            searchRoots: options.searchRoot,
+            workspaceDir: options.workspace,
+            cloneMissing: options.cloneMissing,
+            limit: options.limit,
+            maxCommits: options.maxCommits,
+            maxMatches: options.maxMatches,
+          });
+          console.log(JSON.stringify(result, null, 2));
+        } catch (error) {
+          console.error('Failed to mine the benchmark corpus:', error);
+          process.exit(1);
+        }
+      },
+    );
+
+  program
+    .command('mine:repo-history <repo>')
+    .description('Mine commit messages from a local git repository into the benchmark database')
+    .option('--label <label>', 'Override the repository label stored in the benchmark database')
+    .option('--max-commits <count>', 'Limit how many commits are scanned', parseInteger)
+    .option('--max-matches <count>', 'Limit how many benchmark cases are stored', parseInteger)
+    .action(async (repo: string, options: { label?: string; maxCommits?: number; maxMatches?: number }) => {
+      console.log(`Mining benchmark cases from repository: ${repo}`);
+      try {
+        const result = await mineBenchmarkCasesFromRepo(repo, {
+          repositoryLabel: options.label,
+          maxCommits: options.maxCommits,
+          maxMatches: options.maxMatches,
+        });
+        console.log(
+          `Mined ${result.insertedCases} benchmark case(s) from ${result.matchedCommits} matching commit(s) in ${result.repository}.`,
+        );
+      } catch (error) {
+        console.error(`Failed to mine benchmark cases from repository ${repo}:`, error);
         process.exit(1);
       }
     });
@@ -55,6 +119,19 @@ export function createProgram(): Command {
         );
       } catch (error) {
         console.error(`Failed to explain repository ${repo}:`, error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('profile:repo <repo>')
+    .description('Profile a repository checkout and infer validation commands')
+    .action(async (repo: string) => {
+      try {
+        const profile = await profileRepository(repo);
+        console.log(JSON.stringify(profile, null, 2));
+      } catch (error) {
+        console.error(`Failed to profile repository ${repo}:`, error);
         process.exit(1);
       }
     });
@@ -130,6 +207,19 @@ export function createProgram(): Command {
     });
 
   return program;
+}
+
+function parseInteger(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`Expected a non-negative integer. Received: ${value}`);
+  }
+
+  return parsed;
+}
+
+function collectString(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }
 
 // Run when executed directly

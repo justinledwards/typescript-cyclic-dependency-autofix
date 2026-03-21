@@ -1,6 +1,6 @@
 import type { SimpleGit } from 'simple-git';
 import { canonicalizeCyclePath, normalizeCyclePath } from '../../analyzer/cycleNormalization.js';
-import type { SemanticAnalysisResult } from '../../analyzer/semantic.js';
+import type { SemanticAnalysisResult, StrategyAttempt } from '../../analyzer/semantic.js';
 import type { GeneratedPatch } from '../../codemod/generatePatch.js';
 import { generatePatchForCycle } from '../../codemod/generatePatch.js';
 import type { RepositoryDTO } from '../../db/index.js';
@@ -19,6 +19,19 @@ import { shouldPromotePatchCandidate } from '../promotionPolicy.js';
 import type { ValidationResult } from '../validation.js';
 import { validateGeneratedPatch } from '../validation.js';
 import type { PatchReplayBundle, ScannedCycle } from './types.js';
+
+interface PersistedCandidate {
+  strategy: string | null;
+  plannerRank: number;
+  classification: SemanticAnalysisResult['classification'];
+  confidence: number;
+  reasons: string[];
+  plan: SemanticAnalysisResult['plan'];
+  upstreamabilityScore: number | null;
+  summary: string | null;
+  scoreBreakdown: string[] | null;
+  signals: Record<string, unknown> | null;
+}
 
 export async function getLatestCommitSha(gitRepo: Pick<SimpleGit, 'log'>): Promise<string> {
   try {
@@ -116,108 +129,123 @@ export async function persistCycle(
     return;
   }
 
-  const fixCandidateInfo = addFixCandidate.run({
-    cycle_id: cycleId,
-    classification: persistedCycle.analysis.classification,
-    confidence: persistedCycle.analysis.confidence,
-    reasons: JSON.stringify(persistedCycle.analysis.reasons),
-  });
-  const fixCandidateId = fixCandidateInfo.lastInsertRowid as number;
-  const candidateLogger = cycleLogger.child({
-    fixCandidateId,
-    classification: persistedCycle.analysis.classification,
-  });
-  candidateLogger.info('cycle.classified', {
-    confidence: persistedCycle.analysis.confidence,
-    upstreamabilityScore: persistedCycle.analysis.upstreamabilityScore ?? null,
-  });
+  const candidates = extractPersistedCandidates(persistedCycle.analysis);
 
-  if (!shouldGeneratePatch(persistedCycle.analysis)) {
-    candidateLogger.info('patch.skipped', {
-      reason: 'Candidate did not clear the promotion policy thresholds.',
-      confidence: persistedCycle.analysis.confidence,
-      upstreamabilityScore: persistedCycle.analysis.upstreamabilityScore ?? null,
+  for (const candidate of candidates) {
+    const fixCandidateInfo = addFixCandidate.run({
+      cycle_id: cycleId,
+      strategy: candidate.strategy,
+      planner_rank: candidate.plannerRank,
+      classification: candidate.classification,
+      confidence: candidate.confidence,
+      upstreamability_score: candidate.upstreamabilityScore,
+      reasons: JSON.stringify(candidate.reasons),
+      summary: candidate.summary,
+      score_breakdown: candidate.scoreBreakdown ? JSON.stringify(candidate.scoreBreakdown) : null,
+      signals: candidate.signals ? JSON.stringify(candidate.signals) : null,
     });
-    return;
-  }
-
-  candidateLogger.info('patch.generation.started', {
-    repoPath,
-  });
-
-  let generatedPatch: GeneratedPatch | null;
-  try {
-    generatedPatch = await generatePatchForCycle(repoPath, persistedCycle, persistedCycle.analysis);
-  } catch (error) {
-    candidateLogger.error('patch.generation.failed', {
-      ...serializeError(error),
+    const fixCandidateId = fixCandidateInfo.lastInsertRowid as number;
+    const candidateLogger = cycleLogger.child({
+      fixCandidateId,
+      plannerRank: candidate.plannerRank,
+      strategy: candidate.strategy,
+      classification: candidate.classification,
     });
-    throw error;
-  }
-
-  if (!generatedPatch) {
-    candidateLogger.warn('patch.generation.skipped', {
-      reason: 'No executable patch could be generated for the selected plan.',
+    candidateLogger.info('cycle.candidate.persisted', {
+      confidence: candidate.confidence,
+      upstreamabilityScore: candidate.upstreamabilityScore ?? null,
     });
-    return;
-  }
 
-  candidateLogger.info('patch.generated', {
-    touchedFiles: generatedPatch.touchedFiles.length,
-  });
+    const candidateAnalysis = buildCandidateAnalysis(persistedCycle.analysis, candidate);
 
-  candidateLogger.info('validation.started', {
-    queued: Boolean(options.validationLimiter),
-  });
-  const validationLogger = candidateLogger.child({
-    touchedFiles: generatedPatch.touchedFiles.length,
-  });
-  const validation = options.validationLimiter
-    ? await options.validationLimiter.run(async () =>
-        validateGeneratedPatch(repoPath, persistedCycle, generatedPatch, {
-          logger: validationLogger,
-        }),
-      )
-    : await validateGeneratedPatch(repoPath, persistedCycle, generatedPatch, {
-        logger: validationLogger,
+    if (!shouldGeneratePatch(candidateAnalysis)) {
+      candidateLogger.info('patch.skipped', {
+        reason: 'Candidate did not clear the promotion policy thresholds.',
+        confidence: candidate.confidence,
+        upstreamabilityScore: candidate.upstreamabilityScore ?? null,
       });
-  candidateLogger.info('validation.completed', {
-    status: validation.status,
-    failureCategory: validation.failureCategory ?? null,
-  });
+      continue;
+    }
 
-  const patchPayload = {
-    fix_candidate_id: fixCandidateId,
-    patch_text: generatedPatch.patchText,
-    touched_files: JSON.stringify(generatedPatch.touchedFiles),
-    validation_status: validation.status,
-    validation_summary: validation.summary,
-  };
-  const replayBundle = buildPatchReplayBundle({
-    scanId,
-    sourceTarget,
-    commitSha,
-    remoteUrl,
-    repository,
-    cycle: persistedCycle,
-    generatedPatch,
-    validation,
-  });
+    candidateLogger.info('patch.generation.started', {
+      repoPath,
+    });
 
-  getDb().transaction((patchRow: typeof patchPayload, replayBundleJson: string) => {
-    const patchInfo = addPatch.run(patchRow);
-    candidateLogger.info('patch.persisted', {
-      patchId: patchInfo.lastInsertRowid as number,
-      validationStatus: validation.status,
+    let generatedPatch: GeneratedPatch | null;
+    try {
+      generatedPatch = await generatePatchForCycle(repoPath, persistedCycle, candidateAnalysis);
+    } catch (error) {
+      candidateLogger.error('patch.generation.failed', {
+        ...serializeError(error),
+      });
+      throw error;
+    }
+
+    if (!generatedPatch) {
+      candidateLogger.warn('patch.generation.skipped', {
+        reason: 'No executable patch could be generated for the selected candidate plan.',
+      });
+      continue;
+    }
+
+    candidateLogger.info('patch.generated', {
+      touchedFiles: generatedPatch.touchedFiles.length,
     });
-    addPatchReplay.run({
-      patch_id: patchInfo.lastInsertRowid as number,
-      scan_id: scanId,
-      source_target: sourceTarget,
-      commit_sha: commitSha,
-      replay_bundle: replayBundleJson,
+
+    candidateLogger.info('validation.started', {
+      queued: Boolean(options.validationLimiter),
     });
-  })(patchPayload, JSON.stringify(replayBundle));
+    const validationLogger = candidateLogger.child({
+      touchedFiles: generatedPatch.touchedFiles.length,
+    });
+    const validation = options.validationLimiter
+      ? await options.validationLimiter.run(async () =>
+          validateGeneratedPatch(repoPath, persistedCycle, generatedPatch, {
+            logger: validationLogger,
+          }),
+        )
+      : await validateGeneratedPatch(repoPath, persistedCycle, generatedPatch, {
+          logger: validationLogger,
+        });
+    candidateLogger.info('validation.completed', {
+      status: validation.status,
+      failureCategory: validation.failureCategory ?? null,
+    });
+
+    const patchPayload = {
+      fix_candidate_id: fixCandidateId,
+      patch_text: generatedPatch.patchText,
+      touched_files: JSON.stringify(generatedPatch.touchedFiles),
+      validation_status: validation.status,
+      validation_summary: validation.summary,
+    };
+    const replayBundle = buildPatchReplayBundle({
+      scanId,
+      sourceTarget,
+      commitSha,
+      remoteUrl,
+      repository,
+      cycle: persistedCycle,
+      candidate: candidateAnalysis,
+      generatedPatch,
+      validation,
+    });
+
+    getDb().transaction((patchRow: typeof patchPayload, replayBundleJson: string) => {
+      const patchInfo = addPatch.run(patchRow);
+      candidateLogger.info('patch.persisted', {
+        patchId: patchInfo.lastInsertRowid as number,
+        validationStatus: validation.status,
+      });
+      addPatchReplay.run({
+        patch_id: patchInfo.lastInsertRowid as number,
+        scan_id: scanId,
+        source_target: sourceTarget,
+        commit_sha: commitSha,
+        replay_bundle: replayBundleJson,
+      });
+    })(patchPayload, JSON.stringify(replayBundle));
+  }
 }
 
 function shouldGeneratePatch(analysis: SemanticAnalysisResult): boolean {
@@ -229,6 +257,81 @@ function shouldGeneratePatch(analysis: SemanticAnalysisResult): boolean {
   });
 }
 
+function extractPersistedCandidates(analysis: SemanticAnalysisResult): PersistedCandidate[] {
+  const rankedCandidates = analysis.planner?.rankedCandidates ?? [];
+  if (rankedCandidates.length > 0) {
+    return rankedCandidates.map((candidate, index) => toPersistedCandidate(candidate, index + 1, analysis));
+  }
+
+  return [
+    {
+      strategy: analysis.planner?.selectedStrategy ?? classifyStrategy(analysis.classification),
+      plannerRank: 1,
+      classification: analysis.classification,
+      confidence: analysis.confidence,
+      reasons: analysis.reasons,
+      plan: analysis.plan,
+      upstreamabilityScore: analysis.upstreamabilityScore ?? null,
+      summary: analysis.planner?.selectionSummary ?? null,
+      scoreBreakdown: null,
+      signals: null,
+    },
+  ];
+}
+
+function toPersistedCandidate(
+  attempt: StrategyAttempt,
+  plannerRank: number,
+  analysis: SemanticAnalysisResult,
+): PersistedCandidate {
+  return {
+    strategy: attempt.strategy,
+    plannerRank,
+    classification: attempt.classification ?? analysis.classification,
+    confidence: attempt.confidence ?? analysis.confidence,
+    reasons: attempt.reasons,
+    plan: attempt.plan,
+    upstreamabilityScore: attempt.score ?? null,
+    summary: attempt.summary,
+    scoreBreakdown: attempt.scoreBreakdown ?? null,
+    signals: attempt.signals,
+  };
+}
+
+function buildCandidateAnalysis(
+  analysis: SemanticAnalysisResult,
+  candidate: PersistedCandidate,
+): SemanticAnalysisResult {
+  return {
+    classification: candidate.classification,
+    confidence: candidate.confidence,
+    reasons: candidate.reasons,
+    plan: candidate.plan,
+    upstreamabilityScore: candidate.upstreamabilityScore ?? undefined,
+    planner: analysis.planner,
+  };
+}
+
+function classifyStrategy(classification: SemanticAnalysisResult['classification']): string | null {
+  switch (classification) {
+    case 'autofix_import_type': {
+      return 'import_type';
+    }
+    case 'autofix_direct_import': {
+      return 'direct_import';
+    }
+    case 'autofix_extract_shared': {
+      return 'extract_shared';
+    }
+    case 'autofix_host_state_update': {
+      return 'host_state_update';
+    }
+    default: {
+      return null;
+    }
+  }
+}
+
 function buildPatchReplayBundle(args: {
   scanId: number;
   sourceTarget: string;
@@ -236,6 +339,7 @@ function buildPatchReplayBundle(args: {
   remoteUrl: string | null;
   repository: RepositoryDTO;
   cycle: ScannedCycle;
+  candidate: SemanticAnalysisResult;
   generatedPatch: GeneratedPatch;
   validation: ValidationResult;
 }): PatchReplayBundle {
@@ -261,10 +365,10 @@ function buildPatchReplayBundle(args: {
       },
     },
     candidate: {
-      classification: args.cycle.analysis?.classification ?? 'unsupported',
-      confidence: args.cycle.analysis?.confidence ?? 0,
-      upstreamabilityScore: args.cycle.analysis?.upstreamabilityScore,
-      reasons: args.cycle.analysis?.reasons ?? null,
+      classification: args.candidate.classification,
+      confidence: args.candidate.confidence,
+      upstreamabilityScore: args.candidate.upstreamabilityScore,
+      reasons: args.candidate.reasons ?? null,
     },
     validation: args.validation,
     file_snapshots: args.generatedPatch.fileSnapshots,

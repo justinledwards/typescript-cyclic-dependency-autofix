@@ -311,6 +311,129 @@ describe('Scanner Worker', () => {
     expect(candidates[0].confidence).toBe(0.9);
   });
 
+  it('persists ranked planner candidates and validates executable shortlist entries', async () => {
+    vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(analyzeRepository).mockResolvedValue([
+      {
+        type: 'circular',
+        path: ['a.ts', 'b.ts', 'a.ts'],
+        analysis: {
+          classification: 'autofix_import_type',
+          confidence: 0.93,
+          reasons: ['selected import type candidate'],
+          upstreamabilityScore: 0.96,
+          plan: {
+            kind: 'import_type',
+            imports: [{ sourceFile: 'a.ts', targetFile: 'b.ts' }],
+          },
+          planner: {
+            cycleFiles: ['a.ts', 'b.ts', 'a.ts'],
+            cycleSize: 2,
+            cycleShape: 'two_file',
+            cycleSignals: { explicitImportEdges: 2, loadedFiles: 2, missingFiles: 0 },
+            features: {
+              cycleSize: 2,
+              cycleShape: 'two_file',
+              explicitImportEdges: 2,
+              loadedFiles: 2,
+              missingFiles: 0,
+              hasBarrelFile: false,
+              hasSharedModuleFile: false,
+              typescriptFileCount: 2,
+              tsxFileCount: 0,
+              packageManager: 'pnpm',
+              workspaceMode: 'workspace',
+              validationCommandCount: 2,
+            },
+            fallbackClassification: 'autofix_import_type',
+            fallbackConfidence: 0.93,
+            fallbackReasons: ['selected import type candidate'],
+            selectedStrategy: 'import_type',
+            selectedClassification: 'autofix_import_type',
+            selectedScore: 0.96,
+            selectionSummary: 'Selected import_type after ranking two candidates.',
+            rankedCandidates: [
+              {
+                strategy: 'import_type',
+                status: 'candidate',
+                summary: 'Least invasive option.',
+                reasons: ['selected import type candidate'],
+                signals: { introducesNewFile: false },
+                classification: 'autofix_import_type',
+                confidence: 0.93,
+                plan: {
+                  kind: 'import_type',
+                  imports: [{ sourceFile: 'a.ts', targetFile: 'b.ts' }],
+                },
+                score: 0.96,
+                scoreBreakdown: ['base 0.97'],
+              },
+              {
+                strategy: 'extract_shared',
+                status: 'candidate',
+                summary: 'Fallback shared extraction.',
+                reasons: ['secondary extraction candidate'],
+                signals: { introducesNewFile: true },
+                classification: 'autofix_extract_shared',
+                confidence: 0.84,
+                plan: {
+                  kind: 'extract_shared',
+                  sourceFile: 'b.ts',
+                  targetFile: 'a.ts',
+                  symbols: ['helperB'],
+                  sharedFile: 'helperB.shared.ts',
+                  preserveSourceExports: true,
+                },
+                score: 0.81,
+                scoreBreakdown: ['base 0.68'],
+              },
+            ],
+            attempts: [],
+          },
+        },
+      },
+    ]);
+    vi.mocked(generatePatchForCycle).mockImplementation(async (_repoPath, _cycle, analysis) => ({
+      patchText: `patch for ${analysis.classification}`,
+      touchedFiles: analysis.plan?.kind === 'extract_shared' ? ['a.ts', 'helperB.shared.ts'] : ['a.ts'],
+      validationStatus: 'pending',
+      validationSummary: 'Generated candidate patch. Validation has not run yet.',
+      fileSnapshots: [
+        {
+          path: 'a.ts',
+          before: 'before',
+          after: `after ${analysis.classification}`,
+        },
+      ],
+    }));
+
+    const result = await scanRepository('org/ranked');
+    const cycles = dbModule.getCyclesByScanId.all(result.scanId) as Array<{ id: number }>;
+    const candidates = dbModule.getFixCandidatesByCycleId.all(cycles[0].id) as Array<{
+      id: number;
+      planner_rank: number;
+      classification: string;
+      strategy: string | null;
+      upstreamability_score: number | null;
+    }>;
+
+    expect(candidates).toHaveLength(2);
+    expect(candidates.map((candidate) => candidate.planner_rank)).toEqual([1, 2]);
+    expect(candidates.map((candidate) => candidate.classification)).toEqual([
+      'autofix_import_type',
+      'autofix_extract_shared',
+    ]);
+    expect(candidates[0].strategy).toBe('import_type');
+    expect(candidates[1].upstreamability_score).toBe(0.81);
+
+    const primaryPatches = dbModule.getPatchesByFixCandidateId.all(candidates[0].id);
+    const secondaryPatches = dbModule.getPatchesByFixCandidateId.all(candidates[1].id);
+
+    expect(primaryPatches).toHaveLength(1);
+    expect(secondaryPatches).toHaveLength(1);
+    expect(vi.mocked(generatePatchForCycle)).toHaveBeenCalledTimes(2);
+  });
+
   it('persists generated patches for executable fix plans', async () => {
     vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
     vi.mocked(analyzeRepository).mockResolvedValue([

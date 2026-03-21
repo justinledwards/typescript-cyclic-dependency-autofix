@@ -38,6 +38,75 @@ export interface FindingRecord {
   status?: string;
 }
 
+export interface ReplayBundleRecord {
+  patch_id?: number | null;
+  scan_id?: number | null;
+  source_target?: string | null;
+  commit_sha?: string | null;
+  repository?: {
+    owner?: string;
+    name?: string;
+    local_path?: string | null;
+  };
+  candidate?: {
+    classification?: string;
+    confidence?: number;
+    reasons?: string[] | null;
+  };
+  validation?: {
+    status?: string;
+    summary?: string;
+  };
+  file_snapshots?: Array<{
+    path: string;
+    before: string;
+    after: string;
+  }>;
+}
+
+export interface CycleDetailCandidateRecord {
+  id: number;
+  cycle_id: number;
+  strategy: string | null;
+  planner_rank: number;
+  classification: string;
+  confidence: number;
+  upstreamability_score: number | null;
+  reasons: string[] | null;
+  summary: string | null;
+  score_breakdown: string[];
+  signals: Record<string, unknown>;
+  patch_id: number | null;
+  patch: string | null;
+  touched_files: string[];
+  validation_status: string;
+  validation_summary: string | null;
+  replay: ReplayBundleRecord | null;
+  review_status: string;
+  review_notes: string | null;
+}
+
+export interface CycleDetailRecord {
+  id: number;
+  scan_id: number;
+  normalized_path: string;
+  participating_files: string;
+  raw_payload: unknown;
+  created_at: string;
+  patch_id: number | null;
+  cycle_path: string[];
+  classification: string | null;
+  confidence: number | null;
+  reasons: string[] | null;
+  patch: string | null;
+  validation_status: string;
+  validation_summary: string | null;
+  replay: ReplayBundleRecord | null;
+  review_status: string;
+  review_notes: string | null;
+  candidates: CycleDetailCandidateRecord[];
+}
+
 function toSearchParams(filters?: FindingsFilters) {
   const searchParams = new URLSearchParams();
 
@@ -90,7 +159,7 @@ export async function fetchRepositoryFindings(
   });
 }
 
-export async function fetchCycleDetail(repoId: string, cycleId: string) {
+export async function fetchCycleDetail(repoId: string, cycleId: string): Promise<CycleDetailRecord> {
   const response = await fetch(`${API_BASE_URL}/repositories/${repoId}/cycles/${cycleId}`);
   if (!response.ok) {
     throw new Error(NETWORK_ERROR);

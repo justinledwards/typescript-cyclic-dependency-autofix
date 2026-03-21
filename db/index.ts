@@ -90,6 +90,33 @@ export interface ReviewDecisionDTO {
   created_at: string;
 }
 
+export interface AcceptanceBenchmarkCaseDTO {
+  id: number;
+  repository: string;
+  local_path: string | null;
+  commit_sha: string;
+  scan_id: number | null;
+  cycle_id: number | null;
+  fix_candidate_id: number | null;
+  patch_id: number | null;
+  normalized_path: string;
+  classification: string;
+  confidence: number;
+  upstreamability_score: number | null;
+  validation_status: string | null;
+  validation_summary: string | null;
+  review_status: string | null;
+  touched_files: string | null;
+  feature_vector: string;
+  planner_summary: string | null;
+  planner_attempts: string;
+  acceptability: string | null;
+  rejection_reason: string | null;
+  acceptability_note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export type RepositoryStatus =
   | 'queued'
   | 'scanning'
@@ -106,6 +133,13 @@ export type Classification =
   | 'suggest_manual'
   | 'unsupported';
 export type ReviewDecision = 'approved' | 'rejected' | 'ignored' | 'pr_candidate';
+export type AcceptanceBenchmarkDecision = 'accepted' | 'needs_review' | 'rejected';
+export type AcceptanceBenchmarkRejectionReason =
+  | 'diff_noisy'
+  | 'other'
+  | 'repo_conventions_mismatch'
+  | 'semantic_wrong'
+  | 'validation_weak';
 
 // Schema definition (shared between production and test databases)
 const SCHEMA_SQL = `
@@ -206,6 +240,34 @@ const SCHEMA_SQL = `
     UNIQUE(patch_id)
   );
 
+  CREATE TABLE IF NOT EXISTS acceptance_benchmark_cases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    repository TEXT NOT NULL,
+    local_path TEXT,
+    commit_sha TEXT NOT NULL,
+    scan_id INTEGER,
+    cycle_id INTEGER,
+    fix_candidate_id INTEGER,
+    patch_id INTEGER,
+    normalized_path TEXT NOT NULL,
+    classification TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    upstreamability_score REAL,
+    validation_status TEXT,
+    validation_summary TEXT,
+    review_status TEXT,
+    touched_files TEXT,
+    feature_vector TEXT NOT NULL,
+    planner_summary TEXT,
+    planner_attempts TEXT NOT NULL,
+    acceptability TEXT,
+    rejection_reason TEXT,
+    acceptability_note TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(repository, commit_sha, normalized_path, classification)
+  );
+
   -- Indexes
   CREATE INDEX IF NOT EXISTS idx_repositories_owner_name ON repositories(owner, name);
   CREATE INDEX IF NOT EXISTS idx_repositories_status ON repositories(status);
@@ -222,6 +284,9 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_benchmark_cases_source ON benchmark_cases(source);
   CREATE INDEX IF NOT EXISTS idx_review_decisions_patch_id ON review_decisions(patch_id);
   CREATE INDEX IF NOT EXISTS idx_review_decisions_decision ON review_decisions(decision);
+  CREATE INDEX IF NOT EXISTS idx_acceptance_benchmark_repository ON acceptance_benchmark_cases(repository);
+  CREATE INDEX IF NOT EXISTS idx_acceptance_benchmark_classification ON acceptance_benchmark_cases(classification);
+  CREATE INDEX IF NOT EXISTS idx_acceptance_benchmark_acceptability ON acceptance_benchmark_cases(acceptability);
 `;
 
 /**
@@ -355,6 +420,67 @@ export function createStatements(database: DatabaseType) {
     getReviewDecisionByPatchId: database.prepare(`
       SELECT * FROM review_decisions WHERE patch_id = ?
     `),
+
+    // Acceptance benchmark cases
+    upsertAcceptanceBenchmarkCase: database.prepare(`
+      INSERT INTO acceptance_benchmark_cases (
+        repository, local_path, commit_sha, scan_id, cycle_id, fix_candidate_id, patch_id,
+        normalized_path, classification, confidence, upstreamability_score, validation_status,
+        validation_summary, review_status, touched_files, feature_vector, planner_summary,
+        planner_attempts, acceptability, rejection_reason, acceptability_note
+      )
+      VALUES (
+        @repository, @local_path, @commit_sha, @scan_id, @cycle_id, @fix_candidate_id, @patch_id,
+        @normalized_path, @classification, @confidence, @upstreamability_score, @validation_status,
+        @validation_summary, @review_status, @touched_files, @feature_vector, @planner_summary,
+        @planner_attempts, @acceptability, @rejection_reason, @acceptability_note
+      )
+      ON CONFLICT(repository, commit_sha, normalized_path, classification) DO UPDATE SET
+        local_path = excluded.local_path,
+        scan_id = excluded.scan_id,
+        cycle_id = excluded.cycle_id,
+        fix_candidate_id = excluded.fix_candidate_id,
+        patch_id = excluded.patch_id,
+        confidence = excluded.confidence,
+        upstreamability_score = excluded.upstreamability_score,
+        validation_status = excluded.validation_status,
+        validation_summary = excluded.validation_summary,
+        review_status = excluded.review_status,
+        touched_files = excluded.touched_files,
+        feature_vector = excluded.feature_vector,
+        planner_summary = excluded.planner_summary,
+        planner_attempts = excluded.planner_attempts,
+        acceptability = excluded.acceptability,
+        rejection_reason = excluded.rejection_reason,
+        acceptability_note = excluded.acceptability_note,
+        updated_at = CURRENT_TIMESTAMP
+    `),
+    getAcceptanceBenchmarkCases: database.prepare(`
+      SELECT * FROM acceptance_benchmark_cases ORDER BY updated_at DESC, id DESC
+    `),
+    getAcceptanceBenchmarkCaseById: database.prepare(`
+      SELECT * FROM acceptance_benchmark_cases WHERE id = ?
+    `),
+    getAcceptanceSummaryByClassification: database.prepare(`
+      SELECT
+        classification,
+        COUNT(*) AS total_cases,
+        SUM(CASE WHEN acceptability = 'accepted' THEN 1 ELSE 0 END) AS accepted_cases,
+        SUM(CASE WHEN acceptability = 'rejected' THEN 1 ELSE 0 END) AS rejected_cases,
+        SUM(CASE WHEN acceptability = 'needs_review' OR acceptability IS NULL THEN 1 ELSE 0 END) AS needs_review_cases
+      FROM acceptance_benchmark_cases
+      GROUP BY classification
+      ORDER BY classification
+    `),
+    updateAcceptanceBenchmarkReview: database.prepare(`
+      UPDATE acceptance_benchmark_cases
+      SET
+        acceptability = @acceptability,
+        rejection_reason = @rejection_reason,
+        acceptability_note = @acceptability_note,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = @id
+    `),
   };
 }
 
@@ -486,5 +612,25 @@ export const addReviewDecision = {
 export const getReviewDecisionByPatchId = {
   get: (...args: Parameters<ReturnType<typeof createStatements>['getReviewDecisionByPatchId']['get']>) =>
     getStatements().getReviewDecisionByPatchId.get(...args),
+};
+export const upsertAcceptanceBenchmarkCase = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['upsertAcceptanceBenchmarkCase']['run']>) =>
+    getStatements().upsertAcceptanceBenchmarkCase.run(...args),
+};
+export const getAcceptanceBenchmarkCases = {
+  all: (...args: Parameters<ReturnType<typeof createStatements>['getAcceptanceBenchmarkCases']['all']>) =>
+    getStatements().getAcceptanceBenchmarkCases.all(...args),
+};
+export const getAcceptanceBenchmarkCaseById = {
+  get: (...args: Parameters<ReturnType<typeof createStatements>['getAcceptanceBenchmarkCaseById']['get']>) =>
+    getStatements().getAcceptanceBenchmarkCaseById.get(...args),
+};
+export const getAcceptanceSummaryByClassification = {
+  all: (...args: Parameters<ReturnType<typeof createStatements>['getAcceptanceSummaryByClassification']['all']>) =>
+    getStatements().getAcceptanceSummaryByClassification.all(...args),
+};
+export const updateAcceptanceBenchmarkReview = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['updateAcceptanceBenchmarkReview']['run']>) =>
+    getStatements().updateAcceptanceBenchmarkReview.run(...args),
 };
 /* v8 ignore stop */

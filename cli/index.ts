@@ -1,5 +1,10 @@
 import { Command } from 'commander';
 import { analyzeRepository } from '../analyzer/analyzer.js';
+import {
+  annotateAcceptanceBenchmarkCase,
+  getAcceptanceBenchmarkReport,
+  runAcceptanceBenchmark,
+} from './acceptanceBenchmark.js';
 import { mineBenchmarkCasesFromCorpus } from './benchmarkCorpus.js';
 import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
@@ -25,6 +30,97 @@ export function createProgram(): Command {
         process.exit(1);
       }
     });
+
+  program
+    .command('benchmark:acceptance')
+    .description('Scan the benchmark corpus and snapshot acceptance-ready cycle candidates')
+    .option(
+      '--only <slug>',
+      'Restrict benchmarking to a specific corpus repository slug or repo name',
+      collectString,
+      [],
+    )
+    .option('--search-root <path>', 'Additional root path to search for local repository checkouts', collectString, [])
+    .option('--workspace <path>', 'Directory to clone missing repositories into before benchmarking')
+    .option('--clone-missing', 'Clone missing repositories into the workspace before benchmarking')
+    .option('--limit <count>', 'Limit how many corpus repositories are processed', parseInteger)
+    .option('--scan-worktrees-dir <path>', 'Directory to use for temporary scan worktrees')
+    .action(
+      async (options: {
+        only: string[];
+        searchRoot: string[];
+        workspace?: string;
+        cloneMissing?: boolean;
+        limit?: number;
+        scanWorktreesDir?: string;
+      }) => {
+        try {
+          const result = await runAcceptanceBenchmark({
+            onlyRepositories: options.only,
+            searchRoots: options.searchRoot,
+            workspaceDir: options.workspace,
+            cloneMissing: options.cloneMissing,
+            limit: options.limit,
+            scanWorktreesDir: options.scanWorktreesDir,
+          });
+          console.log(JSON.stringify(result, null, 2));
+        } catch (error) {
+          console.error('Failed to build the acceptance benchmark:', error);
+          process.exit(1);
+        }
+      },
+    );
+
+  program
+    .command('benchmark:acceptance:report')
+    .description('Print the stored acceptance benchmark cases and summary report')
+    .action(() => {
+      try {
+        const result = getAcceptanceBenchmarkReport();
+        console.log(JSON.stringify(result, null, 2));
+      } catch (error) {
+        console.error('Failed to load the acceptance benchmark report:', error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('benchmark:acceptance:annotate <caseId>')
+    .description('Annotate an acceptance benchmark case with a review outcome')
+    .requiredOption('--acceptability <decision>', 'accepted, needs_review, or rejected')
+    .option(
+      '--rejection-reason <reason>',
+      'diff_noisy, validation_weak, semantic_wrong, repo_conventions_mismatch, or other',
+    )
+    .option('--note <note>', 'Optional note describing the review outcome')
+    .action(
+      async (
+        caseId: string,
+        options: {
+          acceptability: string;
+          rejectionReason?: string;
+          note?: string;
+        },
+      ) => {
+        const numericCaseId = Number(caseId);
+        if (!Number.isInteger(numericCaseId) || numericCaseId <= 0) {
+          console.error(`Invalid acceptance benchmark case ID: ${caseId}`);
+          process.exit(1);
+        }
+
+        try {
+          const result = annotateAcceptanceBenchmarkCase(numericCaseId, {
+            acceptability: parseAcceptanceDecision(options.acceptability),
+            rejectionReason: parseAcceptanceRejectionReason(options.rejectionReason),
+            note: options.note,
+          });
+          console.log(JSON.stringify(result, null, 2));
+        } catch (error) {
+          console.error(`Failed to annotate acceptance benchmark case ${caseId}:`, error);
+          process.exit(1);
+        }
+      },
+    );
 
   program
     .command('mine:corpus')
@@ -235,6 +331,36 @@ function parseScore(value: string): number {
 
 function collectString(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+function parseAcceptanceDecision(value: string): 'accepted' | 'needs_review' | 'rejected' {
+  if (value === 'accepted' || value === 'needs_review' || value === 'rejected') {
+    return value;
+  }
+
+  throw new Error(`Expected an acceptance decision of accepted, needs_review, or rejected. Received: ${value}`);
+}
+
+function parseAcceptanceRejectionReason(
+  value?: string,
+): 'diff_noisy' | 'other' | 'repo_conventions_mismatch' | 'semantic_wrong' | 'validation_weak' | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (
+    value === 'diff_noisy' ||
+    value === 'other' ||
+    value === 'repo_conventions_mismatch' ||
+    value === 'semantic_wrong' ||
+    value === 'validation_weak'
+  ) {
+    return value;
+  }
+
+  throw new Error(
+    `Expected a rejection reason of diff_noisy, validation_weak, semantic_wrong, repo_conventions_mismatch, or other. Received: ${value}`,
+  );
 }
 
 // Run when executed directly

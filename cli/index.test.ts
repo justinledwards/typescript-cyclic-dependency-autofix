@@ -2,6 +2,11 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { analyzeRepository } from '../analyzer/analyzer.js';
+import {
+  annotateAcceptanceBenchmarkCase,
+  getAcceptanceBenchmarkReport,
+  runAcceptanceBenchmark,
+} from './acceptanceBenchmark.js';
 import { mineBenchmarkCasesFromCorpus } from './benchmarkCorpus.js';
 import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
@@ -26,6 +31,120 @@ vi.mock('./benchmarkMiner.js', () => ({
     matchedCommits: 3,
     insertedCases: 2,
     matchedTerms: ['circular dependency', 'import type'],
+  }),
+}));
+
+vi.mock('./acceptanceBenchmark.js', () => ({
+  runAcceptanceBenchmark: vi.fn().mockResolvedValue({
+    corpusSize: 2,
+    repositoriesBenchmarked: 1,
+    repositoriesCloned: 0,
+    repositoriesSkipped: 1,
+    totalCycles: 4,
+    totalAcceptanceCases: 3,
+    workspaceDir: path.join(fixtureRoot, 'worktrees', 'acceptance-benchmark'),
+    searchRoots: [path.join(fixtureRoot, 'corpus')],
+    repositoryResults: [
+      {
+        slug: 'openclaw/openclaw',
+        repoPath: path.join(fixtureRoot, 'corpus', 'openclaw'),
+        status: 'benchmarked',
+        scanId: 42,
+        cyclesFound: 4,
+        benchmarkedCases: 3,
+      },
+      {
+        slug: 'microsoft/vscode',
+        repoPath: null,
+        status: 'skipped',
+        reason: 'No local checkout matched the configured search roots',
+      },
+    ],
+    acceptanceSummary: [
+      {
+        classification: 'autofix_import_type',
+        totalCases: 2,
+        acceptedCases: 1,
+        rejectedCases: 0,
+        needsReviewCases: 1,
+        acceptanceRate: 0.5,
+      },
+      {
+        classification: 'autofix_extract_shared',
+        totalCases: 1,
+        acceptedCases: 0,
+        rejectedCases: 1,
+        needsReviewCases: 0,
+        acceptanceRate: 0,
+      },
+    ],
+  }),
+  getAcceptanceBenchmarkReport: vi.fn().mockReturnValue({
+    totalCases: 3,
+    cases: [
+      {
+        id: 7,
+        repository: 'openclaw/openclaw',
+        local_path: path.join(fixtureRoot, 'corpus', 'openclaw'),
+        commit_sha: 'abc123',
+        scan_id: 42,
+        cycle_id: 9,
+        fix_candidate_id: 10,
+        patch_id: 11,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        classification: 'autofix_import_type',
+        confidence: 0.93,
+        upstreamability_score: 0.89,
+        validation_status: 'passed',
+        validation_summary: 'passed',
+        review_status: 'approved',
+        touched_files: '["a.ts","b.ts"]',
+        feature_vector: '{"cycleSize":2}',
+        planner_summary: 'Selected import_type',
+        planner_attempts: '[]',
+        acceptability: 'accepted',
+        rejection_reason: null,
+        acceptability_note: null,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+    summary: [
+      {
+        classification: 'autofix_import_type',
+        totalCases: 2,
+        acceptedCases: 1,
+        rejectedCases: 0,
+        needsReviewCases: 1,
+        acceptanceRate: 0.5,
+      },
+    ],
+  }),
+  annotateAcceptanceBenchmarkCase: vi.fn().mockReturnValue({
+    id: 7,
+    repository: 'openclaw/openclaw',
+    local_path: path.join(fixtureRoot, 'corpus', 'openclaw'),
+    commit_sha: 'abc123',
+    scan_id: 42,
+    cycle_id: 9,
+    fix_candidate_id: 10,
+    patch_id: 11,
+    normalized_path: 'a.ts -> b.ts -> a.ts',
+    classification: 'autofix_import_type',
+    confidence: 0.93,
+    upstreamability_score: 0.89,
+    validation_status: 'passed',
+    validation_summary: 'passed',
+    review_status: 'approved',
+    touched_files: '["a.ts","b.ts"]',
+    feature_vector: '{"cycleSize":2}',
+    planner_summary: 'Selected import_type',
+    planner_attempts: '[]',
+    acceptability: 'rejected',
+    rejection_reason: 'semantic_wrong',
+    acceptability_note: 'Breaks runtime behavior',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
   }),
 }));
 
@@ -466,6 +585,89 @@ describe('CLI', () => {
     consoleSpy.mockRestore();
   });
 
+  it('benchmark:acceptance command logs JSON summary and calls the acceptance runner', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'benchmark:acceptance',
+      '--only',
+      'openclaw/openclaw',
+      '--search-root',
+      path.join(fixtureRoot, 'corpus'),
+      '--scan-worktrees-dir',
+      path.join(fixtureRoot, 'scan-worktrees'),
+    ]);
+
+    expect(vi.mocked(runAcceptanceBenchmark)).toHaveBeenCalledWith({
+      onlyRepositories: ['openclaw/openclaw'],
+      searchRoots: [path.join(fixtureRoot, 'corpus')],
+      workspaceDir: undefined,
+      cloneMissing: undefined,
+      limit: undefined,
+      scanWorktreesDir: path.join(fixtureRoot, 'scan-worktrees'),
+    });
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      repositoriesBenchmarked: 1,
+      totalAcceptanceCases: 3,
+    });
+    consoleSpy.mockRestore();
+  });
+
+  it('benchmark:acceptance:report prints the stored benchmark report', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'benchmark:acceptance:report']);
+
+    expect(vi.mocked(getAcceptanceBenchmarkReport)).toHaveBeenCalledWith();
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      totalCases: 3,
+      summary: [
+        expect.objectContaining({
+          classification: 'autofix_import_type',
+          totalCases: 2,
+        }),
+      ],
+    });
+    consoleSpy.mockRestore();
+  });
+
+  it('benchmark:acceptance:annotate updates a stored benchmark case', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'benchmark:acceptance:annotate',
+      '7',
+      '--acceptability',
+      'rejected',
+      '--rejection-reason',
+      'semantic_wrong',
+      '--note',
+      'Breaks runtime behavior',
+    ]);
+
+    expect(vi.mocked(annotateAcceptanceBenchmarkCase)).toHaveBeenCalledWith(7, {
+      acceptability: 'rejected',
+      rejectionReason: 'semantic_wrong',
+      note: 'Breaks runtime behavior',
+    });
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      id: 7,
+      acceptability: 'rejected',
+      rejection_reason: 'semantic_wrong',
+    });
+    consoleSpy.mockRestore();
+  });
+
   it('create:pr command exits on invalid issue number', async () => {
     const consoleErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined as never) as typeof process.exit);
@@ -526,9 +728,27 @@ describe('CLI', () => {
     exitSpy.mockRestore();
   });
 
-  it('has all eight subcommands registered', () => {
+  it('benchmark:acceptance:annotate exits on invalid case id', async () => {
+    const consoleErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined as never) as typeof process.exit);
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'benchmark:acceptance:annotate', 'nope', '--acceptability', 'accepted']);
+
+    expect(consoleErrSpy).toHaveBeenCalledWith('Invalid acceptance benchmark case ID: nope');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    consoleErrSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it('has all eleven subcommands registered', () => {
     const program = createProgram();
     const commandNames = program.commands.map((cmd) => cmd.name());
+    expect(commandNames).toContain('benchmark:acceptance');
+    expect(commandNames).toContain('benchmark:acceptance:report');
+    expect(commandNames).toContain('benchmark:acceptance:annotate');
     expect(commandNames).toContain('scan');
     expect(commandNames).toContain('explain');
     expect(commandNames).toContain('mine:corpus');

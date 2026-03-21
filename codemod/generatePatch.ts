@@ -384,15 +384,167 @@ function buildPatchText(snapshots: FileSnapshot[]): string {
 }
 
 function createUnifiedPatch(snapshot: FileSnapshot): string {
-  const beforeLines = snapshot.before.split('\n');
-  const afterLines = snapshot.after.split('\n');
+  const beforeLines = splitPatchLines(snapshot.before);
+  const afterLines = splitPatchLines(snapshot.after);
+  const operations = diffPatchLines(beforeLines, afterLines);
+  const hunks = buildUnifiedDiffHunks(operations);
+
+  return [`--- a/${snapshot.path}`, `+++ b/${snapshot.path}`, ...hunks].join('\n');
+}
+
+type DiffOperation =
+  | { type: 'context'; line: string; beforeLineNumber: number; afterLineNumber: number }
+  | { type: 'delete'; line: string; beforeLineNumber: number }
+  | { type: 'add'; line: string; afterLineNumber: number };
+
+function splitPatchLines(text: string): string[] {
+  const normalized = text.replaceAll('\r\n', '\n');
+  const lines = normalized.split('\n');
+
+  if (normalized.endsWith('\n')) {
+    lines.pop();
+  }
+
+  return lines;
+}
+
+function diffPatchLines(beforeLines: string[], afterLines: string[]): DiffOperation[] {
+  const lcsLengths = Array.from({ length: beforeLines.length + 1 }, () =>
+    Array.from({ length: afterLines.length + 1 }, () => 0),
+  );
+
+  for (let beforeIndex = beforeLines.length - 1; beforeIndex >= 0; beforeIndex -= 1) {
+    for (let afterIndex = afterLines.length - 1; afterIndex >= 0; afterIndex -= 1) {
+      lcsLengths[beforeIndex][afterIndex] =
+        beforeLines[beforeIndex] === afterLines[afterIndex]
+          ? lcsLengths[beforeIndex + 1][afterIndex + 1] + 1
+          : Math.max(lcsLengths[beforeIndex + 1][afterIndex], lcsLengths[beforeIndex][afterIndex + 1]);
+    }
+  }
+
+  const operations: DiffOperation[] = [];
+  let beforeIndex = 0;
+  let afterIndex = 0;
+  let beforeLineNumber = 1;
+  let afterLineNumber = 1;
+
+  while (beforeIndex < beforeLines.length && afterIndex < afterLines.length) {
+    if (beforeLines[beforeIndex] === afterLines[afterIndex]) {
+      operations.push({
+        type: 'context',
+        line: beforeLines[beforeIndex],
+        beforeLineNumber,
+        afterLineNumber,
+      });
+      beforeIndex += 1;
+      afterIndex += 1;
+      beforeLineNumber += 1;
+      afterLineNumber += 1;
+      continue;
+    }
+
+    if (lcsLengths[beforeIndex + 1][afterIndex] >= lcsLengths[beforeIndex][afterIndex + 1]) {
+      operations.push({
+        type: 'delete',
+        line: beforeLines[beforeIndex],
+        beforeLineNumber,
+      });
+      beforeIndex += 1;
+      beforeLineNumber += 1;
+      continue;
+    }
+
+    operations.push({
+      type: 'add',
+      line: afterLines[afterIndex],
+      afterLineNumber,
+    });
+    afterIndex += 1;
+    afterLineNumber += 1;
+  }
+
+  while (beforeIndex < beforeLines.length) {
+    operations.push({
+      type: 'delete',
+      line: beforeLines[beforeIndex],
+      beforeLineNumber,
+    });
+    beforeIndex += 1;
+    beforeLineNumber += 1;
+  }
+
+  while (afterIndex < afterLines.length) {
+    operations.push({
+      type: 'add',
+      line: afterLines[afterIndex],
+      afterLineNumber,
+    });
+    afterIndex += 1;
+    afterLineNumber += 1;
+  }
+
+  return operations;
+}
+
+function buildUnifiedDiffHunks(operations: DiffOperation[], contextLines = 3): string[] {
+  const hunks: string[] = [];
+  let operationIndex = 0;
+
+  while (operationIndex < operations.length) {
+    while (operationIndex < operations.length && operations[operationIndex].type === 'context') {
+      operationIndex += 1;
+    }
+
+    if (operationIndex >= operations.length) {
+      break;
+    }
+
+    const hunkStartIndex = Math.max(0, operationIndex - contextLines);
+    let hunkEndIndex = operationIndex;
+    let lastChangedIndex = operationIndex;
+
+    while (hunkEndIndex < operations.length) {
+      if (operations[hunkEndIndex].type !== 'context') {
+        lastChangedIndex = hunkEndIndex;
+      }
+
+      if (hunkEndIndex - lastChangedIndex > contextLines) {
+        break;
+      }
+
+      hunkEndIndex += 1;
+    }
+
+    const hunkOperations = operations.slice(
+      hunkStartIndex,
+      Math.min(operations.length, lastChangedIndex + contextLines + 1),
+    );
+    hunks.push(formatUnifiedDiffHunk(hunkOperations));
+    operationIndex = lastChangedIndex + contextLines + 1;
+  }
+
+  return hunks;
+}
+
+function formatUnifiedDiffHunk(operations: DiffOperation[]): string {
+  const beforeLines = operations.filter((operation) => operation.type !== 'add');
+  const afterLines = operations.filter((operation) => operation.type !== 'delete');
+  const beforeStart = beforeLines[0]?.beforeLineNumber ?? 0;
+  const afterStart = afterLines[0]?.afterLineNumber ?? 0;
 
   return [
-    `--- a/${snapshot.path}`,
-    `+++ b/${snapshot.path}`,
-    `@@ -1,${beforeLines.length} +1,${afterLines.length} @@`,
-    ...beforeLines.map((line) => `-${line}`),
-    ...afterLines.map((line) => `+${line}`),
+    `@@ -${beforeStart},${beforeLines.length} +${afterStart},${afterLines.length} @@`,
+    ...operations.map((operation) => {
+      if (operation.type === 'context') {
+        return ` ${operation.line}`;
+      }
+
+      if (operation.type === 'delete') {
+        return `-${operation.line}`;
+      }
+
+      return `+${operation.line}`;
+    }),
   ].join('\n');
 }
 

@@ -1,11 +1,12 @@
+import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { createRequire } from 'node:module';
-import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { analyzeRepository } from '../analyzer/analyzer.js';
 import type { CircularDependency } from '../analyzer/analyzer.js';
+import { analyzeRepository } from '../analyzer/analyzer.js';
+import { normalizeCyclePath } from '../analyzer/cycleNormalization.js';
 import type { GeneratedPatch } from '../codemod/generatePatch.js';
 import { profileRepository } from './repoProfile.js';
 
@@ -81,10 +82,6 @@ async function applySnapshots(repoPath: string, generatedPatch: GeneratedPatch):
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
     await fs.writeFile(absolutePath, snapshot.after, 'utf8');
   }
-}
-
-function normalizeCyclePath(cyclePath: string[]): string {
-  return cyclePath.join(' -> ');
 }
 
 async function safeProfileRepository(repoPath: string) {

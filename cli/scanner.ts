@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import simpleGit from 'simple-git';
 import { analyzeRepository } from '../analyzer/analyzer.js';
+import { canonicalizeCyclePath, normalizeCyclePath } from '../analyzer/cycleNormalization.js';
 import type { GeneratedPatch } from '../codemod/generatePatch.js';
 import { generatePatchForCycle } from '../codemod/generatePatch.js';
 import type { RepositoryDTO } from '../db/index.js';
@@ -85,7 +86,7 @@ export async function scanRepository(targetUrlOrOwnerName: string, worktreesDir 
   const scanId = scanInfo.lastInsertRowid as number;
 
   try {
-    const cycles = await analyzeRepository(resolvedTarget.repoPath);
+    const cycles = dedupeCycles(await analyzeRepository(resolvedTarget.repoPath));
 
     for (const cycle of cycles) {
       await persistCycle(
@@ -274,6 +275,25 @@ async function getLatestCommitSha(gitRepo: ReturnType<typeof simpleGit>): Promis
   }
 }
 
+function dedupeCycles(cycles: ScannedCycle[]): ScannedCycle[] {
+  const dedupedCycles = new Map<string, ScannedCycle>();
+
+  for (const cycle of cycles) {
+    const canonicalPath = canonicalizeCyclePath(cycle.path);
+    const normalizedPath = normalizeCyclePath(canonicalPath);
+    if (dedupedCycles.has(normalizedPath)) {
+      continue;
+    }
+
+    dedupedCycles.set(normalizedPath, {
+      ...cycle,
+      path: canonicalPath,
+    });
+  }
+
+  return [...dedupedCycles.values()];
+}
+
 async function persistCycle(
   scanId: number,
   repoPath: string,
@@ -283,30 +303,36 @@ async function persistCycle(
   repository: RepositoryDTO,
   cycle: ScannedCycle,
 ): Promise<void> {
+  const canonicalPath = canonicalizeCyclePath(cycle.path);
+  const persistedCycle = {
+    ...cycle,
+    path: canonicalPath,
+  };
+
   const cycleInfo = addCycle.run({
     scan_id: scanId,
-    normalized_path: cycle.path.join(' -> '),
-    participating_files: JSON.stringify(cycle.path),
-    raw_payload: JSON.stringify(cycle),
+    normalized_path: normalizeCyclePath(canonicalPath),
+    participating_files: JSON.stringify(canonicalPath),
+    raw_payload: JSON.stringify(persistedCycle),
   });
 
-  if (!cycle.analysis) {
+  if (!persistedCycle.analysis) {
     return;
   }
 
   const fixCandidateInfo = addFixCandidate.run({
     cycle_id: cycleInfo.lastInsertRowid as number,
-    classification: cycle.analysis.classification,
-    confidence: cycle.analysis.confidence,
-    reasons: JSON.stringify(cycle.analysis.reasons),
+    classification: persistedCycle.analysis.classification,
+    confidence: persistedCycle.analysis.confidence,
+    reasons: JSON.stringify(persistedCycle.analysis.reasons),
   });
 
-  const generatedPatch = await generatePatchForCycle(repoPath, cycle, cycle.analysis);
+  const generatedPatch = await generatePatchForCycle(repoPath, persistedCycle, persistedCycle.analysis);
   if (!generatedPatch) {
     return;
   }
 
-  const validation = await validateGeneratedPatch(repoPath, cycle, generatedPatch);
+  const validation = await validateGeneratedPatch(repoPath, persistedCycle, generatedPatch);
   const patchPayload = {
     fix_candidate_id: fixCandidateInfo.lastInsertRowid as number,
     patch_text: generatedPatch.patchText,
@@ -320,7 +346,7 @@ async function persistCycle(
     commitSha,
     remoteUrl,
     repository,
-    cycle,
+    cycle: persistedCycle,
     generatedPatch,
     validation,
   });
@@ -373,6 +399,8 @@ function buildPatchReplayBundle(args: {
   generatedPatch: GeneratedPatch;
   validation: ValidationResult;
 }): PatchReplayBundle {
+  const canonicalPath = canonicalizeCyclePath(args.cycle.path);
+
   return {
     scan_id: args.scanId,
     source_target: args.sourceTarget,
@@ -385,9 +413,12 @@ function buildPatchReplayBundle(args: {
       remote_url: normalizeRemoteUrl(args.remoteUrl, args.repository.owner, args.repository.name),
     },
     cycle: {
-      path: args.cycle.path,
-      normalized_path: args.cycle.path.join(' -> '),
-      raw_payload: args.cycle,
+      path: canonicalPath,
+      normalized_path: normalizeCyclePath(canonicalPath),
+      raw_payload: {
+        ...args.cycle,
+        path: canonicalPath,
+      },
     },
     candidate: {
       classification: args.cycle.analysis?.classification ?? 'unsupported',

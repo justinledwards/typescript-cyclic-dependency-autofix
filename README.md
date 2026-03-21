@@ -1,6 +1,6 @@
 # Circular Dependency Autofix Bot
 
-Scans JavaScript and TypeScript repositories for circular dependencies, classifies which cycles are safe to fix automatically, generates patch files, and provides a review UI for human triage before creating pull requests.
+Scans JavaScript and TypeScript repositories for circular dependencies, extracts planner features, ranks safe rewrite strategies, generates candidate patches, validates them, and provides a review/PR workflow for the cases worth sending upstream.
 
 ## Quick Start
 
@@ -25,54 +25,78 @@ pnpm run dev
 ## Architecture
 
 ```
-├── src/                 # TanStack Start frontend (React + file-based routing)
-│   ├── routes/          # Page routes (repositories, cycle detail, about)
-│   ├── components/      # Shared UI components
-│   └── lib/             # API client and utilities
-├── backend/             # Fastify API server
-│   └── server.ts        # REST endpoints for repos, scans, cycles, reviews
-├── analyzer/            # Dependency analysis engine
-│   └── analyzer.ts      # dependency-cruiser integration
-├── cli/                 # Commander CLI
-│   └── index.ts         # scan, scan:all, retry:failed, export:patches
-├── db/                  # SQLite schema + data access layer
-│   └── index.ts         # Tables, DTOs, prepared statements
-├── codemod/             # jscodeshift rewrite scripts (planned)
-└── worktrees/           # Temp repo clones for patch generation (gitignored)
+├── src/                         # TanStack Start frontend and review UI
+│   ├── routes/                  # Repository, cycle, findings, and about routes
+│   ├── components/              # Shared UI shell
+│   ├── lib/                     # API client helpers
+│   └── routeTree.gen.ts         # Generated route tree
+├── backend/                     # Fastify API server
+│   └── server.ts                # REST endpoints for scans, cycles, patches, and reviews
+├── analyzer/                    # Detection, normalization, feature extraction, and strategy ranking
+│   ├── analyzer.ts              # dependency-cruiser entrypoint and repo/evidence wiring
+│   ├── cycleNormalization.ts    # Canonical cycle identity helpers
+│   └── semantic/                # Feature extraction, evidence scoring, planner output
+├── cli/                         # CLI orchestration, validation, benchmarking, and PR automation
+│   ├── scanner/                 # Target resolution, persistence, and replay bundle generation
+│   ├── createPullRequest/       # Scratch checkout, snapshot replay, and PR rendering
+│   ├── acceptanceBenchmark.ts   # Acceptance benchmark snapshotting and annotations
+│   ├── benchmarkCorpus.ts       # Corpus batch mining
+│   ├── benchmarkMiner.ts        # Local git-history miner
+│   ├── repoProfile.ts           # Repo-native validation command inference
+│   ├── smoke.ts                 # Fixture-driven real-repo smoke suite
+│   ├── validation.ts            # Graph + repo-native validation
+│   └── index.ts                 # CLI entrypoint
+├── codemod/                     # Patch generation and file snapshot export
+│   └── generatePatch.ts
+├── db/                          # SQLite schema, DTOs, prepared statements, and metrics inputs
+│   └── index.ts
+├── benchmarks/                  # Real-repo corpus definitions and notes
+├── smoke.fixtures.json          # Default smoke suite fixture list
+└── worktrees/                   # Temp clones / scratch checkouts (gitignored)
 ```
 
 ## CLI Commands
 
 ```bash
-pnpm run scan <repo-url-or-path>   # Analyze a single repository
-pnpm run scan:all                  # Scan all tracked repositories
-pnpm run retry:failed              # Retry failed patch candidates
-pnpm run export:patches            # Export approved patches for PR generation
+pnpm run scan <repo-url-or-path>                 # Scan a repository and persist cycles/candidates
+pnpm run explain <repo-url-or-path>              # Print planner output for each detected cycle
+pnpm run profile:repo <repo-path>                # Infer repo-native validation commands
+pnpm run smoke [fixturesPath]                    # Run the real-repo smoke suite
+pnpm run benchmark:acceptance                    # Snapshot acceptance benchmark cases from corpus scans
+pnpm run mine:corpus                             # Mine historical benchmark cases from the repo corpus
+pnpm run mine:repo-history <repo-path>           # Mine benchmark cases from one local checkout
+pnpm run create:pr <patchId> --issue <number>   # Replay a stored patch and open a PR
+pnpm run export:patches [outputDir]              # Export approved or PR-candidate patch files
 ```
+
+`scan:all` and `retry:failed` are still placeholders; the main operational paths are the commands above.
 
 ## How It Works
 
-1. **Clone/update** repository heads
-2. **Detect** circular dependencies using `dependency-cruiser`
-3. **Classify** each cycle: `autofix_extract_shared`, `autofix_direct_import`, `autofix_import_type`, `suggest_manual`, or `unsupported`
-4. **Generate patches** for high-confidence cases using `jscodeshift` + `recast`
-5. **Validate** with `tsc --noEmit` and re-run cycle detection
-6. **Review** in the web UI — approve, reject, or request manual intervention
+1. **Resolve a target** from a local path or remote repository URL and capture repository metadata.
+2. **Detect cycles** with `dependency-cruiser`, then normalize rotated equivalents into a canonical cycle identity.
+3. **Extract planner features** for each cycle and evaluate supported strategies:
+   - `autofix_import_type`
+   - `autofix_direct_import`
+   - `autofix_extract_shared`
+   - `autofix_host_state_update`
+4. **Rank candidates** with planner heuristics plus historical evidence from benchmark cases, validation failures, and review outcomes.
+5. **Generate patches** for promoted candidates, including replayable file snapshots for deterministic PR creation.
+6. **Validate rewrites** by replaying the patch in a scratch checkout, re-running analysis, failing on persisted or newly introduced cycles, and running repo-native validation commands plus `tsc --noEmit` when available.
+7. **Review or benchmark** results through the UI, acceptance benchmark workflow, or smoke suite.
+8. **Create PRs** only for candidates that clear the upstreamability threshold.
 
 ## Safe Auto-Fix Scope (v1)
 
-Only cycles matching **all** of these are auto-fixed:
+The tool is still intentionally conservative. It targets narrow cycle shapes where the rewrite can be explained and validated mechanically:
 
-- Two-file cycle only
+- Primarily two-file cycles, with a narrow barrel/direct-import exception
 - Files are `.js`, `.jsx`, `.ts`, or `.tsx`
-- Candidate symbol is a top-level named function, const, type alias, or interface
-- No default export involved
-- No class extraction
-- No module-local mutable state captured
-- No top-level side-effect dependency
-- No namespace import or re-export trickery
-- New shared file doesn't create another cycle
-- Validation passes after rewrite
+- Candidate declarations are simple top-level functions, consts, type aliases, or interfaces
+- No default exports or class extraction
+- No unsafe module-scope side effects
+- No extraction that would recreate the cycle in the shared file
+- No PR creation unless the candidate clears promotion and validation thresholds
 
 ## Tech Stack
 
@@ -84,7 +108,7 @@ Only cycles matching **all** of these are auto-fixed:
 | Backend | Fastify 5 |
 | Database | SQLite (better-sqlite3) |
 | Analysis | dependency-cruiser + ts-morph |
-| Codemods | jscodeshift + recast |
+| Codemods | ts-morph + recast-friendly patch export |
 | Testing | Vitest |
 
 ## License

@@ -19,6 +19,7 @@
     "format": "biome format --write .",
     "check": "biome check --write . && eslint --fix . && pnpm run test:coverage",
     "scan": "tsx cli/index.ts scan",
+    "smoke": "tsx cli/index.ts smoke",
     "explain": "tsx cli/index.ts explain",
     "profile:repo": "tsx cli/index.ts profile:repo",
     "mine:corpus": "tsx cli/index.ts mine:corpus",

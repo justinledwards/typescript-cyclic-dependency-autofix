@@ -14,6 +14,7 @@ import { exportApprovedPatches } from './exportPatches.js';
 import { createProgram } from './index.js';
 import { profileRepository } from './repoProfile.js';
 import { scanRepository } from './scanner.js';
+import { formatSmokeSuiteResult, loadSmokeFixtures, runSmokeSuite } from './smoke.js';
 
 const fixtureRoot = vi.hoisted(() => `${process.cwd()}/.test-fixtures`);
 const exportedDir = vi.hoisted(() => `${process.cwd()}/.test-fixtures/patches`);
@@ -21,6 +22,36 @@ mkdirSync(fixtureRoot, { recursive: true });
 
 vi.mock('./scanner.js', () => ({
   scanRepository: vi.fn().mockResolvedValue({ scanId: 999, cyclesFound: 2 }),
+}));
+
+vi.mock('./smoke.js', () => ({
+  loadSmokeFixtures: vi.fn().mockResolvedValue([
+    {
+      name: 'openclaw',
+      target: '../openclaw',
+      expectations: { minCycles: 1 },
+    },
+  ]),
+  runSmokeSuite: vi.fn().mockResolvedValue({
+    results: [
+      {
+        name: 'openclaw',
+        target: '../openclaw',
+        status: 'passed',
+        scanId: 13,
+        cyclesFound: 4,
+        candidateCount: 2,
+        patchCount: 1,
+        classifications: {
+          autofix_extract_shared: 1,
+          unsupported: 1,
+        },
+      },
+    ],
+    passed: 1,
+    failed: 0,
+  }),
+  formatSmokeSuiteResult: vi.fn().mockReturnValue('PASS openclaw: 4 cycles, 2 candidates, 1 patches'),
 }));
 
 vi.mock('./benchmarkMiner.js', () => ({
@@ -345,6 +376,43 @@ describe('CLI', () => {
     consoleSpy.mockRestore();
   });
 
+  it('smoke command loads fixtures, runs the smoke suite, and prints the formatted result', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'smoke',
+      path.join(fixtureRoot, 'smoke.fixtures.json'),
+      '--worktrees-dir',
+      path.join(fixtureRoot, 'smoke-worktrees'),
+    ]);
+
+    expect(vi.mocked(loadSmokeFixtures)).toHaveBeenCalledWith(path.join(fixtureRoot, 'smoke.fixtures.json'));
+    expect(vi.mocked(runSmokeSuite)).toHaveBeenCalledWith(
+      [
+        {
+          name: 'openclaw',
+          target: '../openclaw',
+          expectations: { minCycles: 1 },
+        },
+      ],
+      {
+        worktreesDir: path.join(fixtureRoot, 'smoke-worktrees'),
+      },
+    );
+    expect(vi.mocked(formatSmokeSuiteResult)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        passed: 1,
+        failed: 0,
+      }),
+    );
+    expect(consoleSpy).toHaveBeenCalledWith('PASS openclaw: 4 cycles, 2 candidates, 1 patches');
+    consoleSpy.mockRestore();
+  });
+
   it('mine:repo-history command logs repository path and calls miner', async () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const program = createProgram();
@@ -378,6 +446,40 @@ describe('CLI', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
 
     consoleErrSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it('smoke command exits when the smoke suite reports failures', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined as never) as typeof process.exit);
+    vi.mocked(runSmokeSuite).mockResolvedValueOnce({
+      results: [
+        {
+          name: 'dify',
+          target: 'https://github.com/langgenius/dify.git',
+          status: 'failed',
+          stage: 'expectation',
+          message: 'Expected at least 1 unsupported candidates, found 0.',
+        },
+      ],
+      passed: 0,
+      failed: 1,
+    });
+    vi.mocked(formatSmokeSuiteResult).mockReturnValueOnce(
+      'FAIL dify [expectation]: Expected at least 1 unsupported candidates, found 0.',
+    );
+
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'smoke']);
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      'FAIL dify [expectation]: Expected at least 1 unsupported candidates, found 0.',
+    );
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    consoleSpy.mockRestore();
     exitSpy.mockRestore();
   });
 
@@ -743,9 +845,10 @@ describe('CLI', () => {
     exitSpy.mockRestore();
   });
 
-  it('has all eleven subcommands registered', () => {
+  it('has all twelve subcommands registered', () => {
     const program = createProgram();
     const commandNames = program.commands.map((cmd) => cmd.name());
+    expect(commandNames).toContain('smoke');
     expect(commandNames).toContain('benchmark:acceptance');
     expect(commandNames).toContain('benchmark:acceptance:report');
     expect(commandNames).toContain('benchmark:acceptance:annotate');

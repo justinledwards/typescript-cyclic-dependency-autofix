@@ -34,9 +34,7 @@ describe('validateGeneratedPatch', () => {
       'b.ts': "import { AType } from './a';\nexport interface BType { a: AType }\n",
     });
 
-    vi.spyOn(analyzerModule, 'analyzeRepository')
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    vi.spyOn(analyzerModule, 'analyzeRepository').mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
     const generatedPatch: GeneratedPatch = {
       patchText: 'diff',
@@ -60,6 +58,58 @@ describe('validateGeneratedPatch', () => {
 
     expect(result.status).toBe('passed');
     expect(result.summary).toContain('original cycle removed');
+  });
+
+  it('runs repo-native validation commands before the TypeScript check', async () => {
+    const repoPath = await createRepo({
+      'package.json': JSON.stringify(
+        {
+          packageManager: 'npm@10.0.0',
+          scripts: {
+            check: 'node -e "process.exit(0)"',
+          },
+        },
+        null,
+        2,
+      ),
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            strict: true,
+          },
+        },
+        null,
+        2,
+      ),
+      'a.ts': "import { BType } from './b';\nexport type AType = BType;\n",
+      'b.ts': "import { AType } from './a';\nexport interface BType { a: AType }\n",
+    });
+
+    vi.spyOn(analyzerModule, 'analyzeRepository').mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    const generatedPatch: GeneratedPatch = {
+      patchText: 'diff',
+      touchedFiles: ['a.ts', 'b.ts'],
+      validationStatus: 'pending',
+      validationSummary: 'pending',
+      fileSnapshots: [
+        {
+          path: 'a.ts',
+          before: "import { BType } from './b';\nexport type AType = BType;\n",
+          after: "import type { BType } from './b';\nexport type AType = BType;\n",
+        },
+      ],
+    };
+
+    const result = await validateGeneratedPatch(
+      repoPath,
+      { type: 'circular', path: ['a.ts', 'b.ts', 'a.ts'] },
+      generatedPatch,
+    );
+
+    expect(result.status).toBe('passed');
+    expect(result.summary).toContain('Repo-native validation passed (npm run check)');
+    expect(result.summary).toContain('TypeScript check passed');
   });
 
   it('fails when the original cycle is still present after applying the rewrite', async () => {

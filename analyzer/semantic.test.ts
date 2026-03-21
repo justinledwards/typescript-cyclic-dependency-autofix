@@ -73,7 +73,15 @@ describe('SemanticAnalyzer', () => {
       selectedStrategy: 'import_type',
       selectedClassification: 'autofix_import_type',
       selectedScore: 0.94,
+      features: {
+        cycleSize: 2,
+        cycleShape: 'two_file',
+        explicitImportEdges: 2,
+        loadedFiles: 2,
+        missingFiles: 0,
+      },
     });
+    expect(result.planner?.rankedCandidates[0]?.strategy).toBe('import_type');
     expect(result.planner?.attempts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -206,7 +214,7 @@ describe('SemanticAnalyzer', () => {
       cycleShape: 'multi_file',
       selectedStrategy: 'direct_import',
       selectedClassification: 'autofix_direct_import',
-      selectedScore: 0.89,
+      selectedScore: 0.9,
     });
     expect(result.plan).toEqual({
       kind: 'direct_import',
@@ -219,6 +227,112 @@ describe('SemanticAnalyzer', () => {
         },
       ],
     });
+  });
+
+  it('adjusts candidate scoring with historical evidence and repository features', () => {
+    analyzer = new SemanticAnalyzer('/dummy/repo', {
+      repositoryProfile: {
+        packageManager: 'pnpm',
+        workspaceMode: 'workspace',
+        validationCommandCount: 4,
+      },
+      historicalEvidence: {
+        totalBenchmarkCases: 6,
+        totalReviewedPatches: 4,
+        totalValidatedPatches: 4,
+        strategies: {
+          import_type: {
+            benchmarkMatches: 0,
+            profileMatches: 0,
+            approvedReviews: 0,
+            rejectedReviews: 0,
+            prCandidates: 0,
+            ignoredReviews: 0,
+            passedValidations: 0,
+            failedValidations: 0,
+          },
+          direct_import: {
+            benchmarkMatches: 4,
+            profileMatches: 2,
+            approvedReviews: 3,
+            rejectedReviews: 0,
+            prCandidates: 1,
+            ignoredReviews: 0,
+            passedValidations: 4,
+            failedValidations: 0,
+          },
+          extract_shared: {
+            benchmarkMatches: 0,
+            profileMatches: 0,
+            approvedReviews: 0,
+            rejectedReviews: 0,
+            prCandidates: 0,
+            ignoredReviews: 0,
+            passedValidations: 0,
+            failedValidations: 0,
+          },
+          host_state_update: {
+            benchmarkMatches: 0,
+            profileMatches: 0,
+            approvedReviews: 0,
+            rejectedReviews: 0,
+            prCandidates: 0,
+            ignoredReviews: 0,
+            passedValidations: 0,
+            failedValidations: 0,
+          },
+        },
+      },
+    });
+
+    analyzer.project.createSourceFile(
+      '/dummy/repo/app.ts',
+      `
+      import { Foo } from './index';
+      export const appValue = Foo + 1;
+    `,
+    );
+    analyzer.project.createSourceFile(
+      '/dummy/repo/index.ts',
+      `
+      export { Foo } from './foo';
+      export { Bar } from './bar';
+    `,
+    );
+    analyzer.project.createSourceFile('/dummy/repo/foo.ts', 'export const Foo = 1;');
+    analyzer.project.createSourceFile(
+      '/dummy/repo/bar.ts',
+      `
+      import { appValue } from './app';
+      export const Bar = appValue + 1;
+    `,
+    );
+
+    const result = analyzer.analyzeCycle(['app.ts', 'index.ts', 'bar.ts', 'app.ts']);
+
+    expect(result.classification).toBe('autofix_direct_import');
+    expect(result.upstreamabilityScore).toBeGreaterThan(0.89);
+    expect(result.planner).toMatchObject({
+      features: {
+        hasBarrelFile: true,
+        packageManager: 'pnpm',
+        workspaceMode: 'workspace',
+        validationCommandCount: 4,
+      },
+    });
+    expect(result.planner?.rankedCandidates[0]?.signals).toMatchObject({
+      historicalBenchmarkMatches: 4,
+      historicalProfileMatches: 2,
+      historicalReviewedPatches: 4,
+      historicalValidatedPatches: 4,
+    });
+    expect(result.planner?.rankedCandidates[0]?.scoreBreakdown).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('matching benchmark case'),
+        expect.stringContaining('review outcomes'),
+        expect.stringContaining('validation history'),
+      ]),
+    );
   });
 
   it('detects host_state_update for thin imported setters on caller-owned state', () => {

@@ -37,3 +37,4 @@ worktrees/
 
 # Testing
 coverage/
+.test-fixtures/

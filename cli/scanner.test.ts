@@ -321,6 +321,7 @@ describe('Scanner Worker', () => {
           classification: 'autofix_import_type',
           confidence: 0.9,
           reasons: ['mock reason'],
+          upstreamabilityScore: 0.94,
           plan: {
             kind: 'import_type',
             imports: [{ sourceFile: 'a.ts', targetFile: 'b.ts' }],
@@ -361,6 +362,7 @@ describe('Scanner Worker', () => {
     expect(replay.commit_sha).toBe('mock-sha');
     expect(JSON.parse(replay.replay_bundle).file_snapshots).toHaveLength(1);
     expect(JSON.parse(replay.replay_bundle).repository.remote_url).toBe('https://github.com/org/patch.git');
+    expect(JSON.parse(replay.replay_bundle).candidate.upstreamabilityScore).toBe(0.94);
   });
 
   it('persists failed validation summaries when a generated patch does not validate', async () => {
@@ -373,6 +375,7 @@ describe('Scanner Worker', () => {
           classification: 'autofix_import_type',
           confidence: 0.9,
           reasons: ['mock reason'],
+          upstreamabilityScore: 0.94,
           plan: {
             kind: 'import_type',
             imports: [{ sourceFile: 'a.ts', targetFile: 'b.ts' }],
@@ -414,5 +417,34 @@ describe('Scanner Worker', () => {
     expect(patches[0].validation_status).toBe('failed');
     expect(patches[0].validation_summary).toContain('original cycle is still present');
     expect(JSON.parse(replay.replay_bundle).validation.summary).toContain('original cycle is still present');
+  });
+
+  it('does not generate a patch when the candidate is below the promotion threshold', async () => {
+    vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(analyzeRepository).mockResolvedValue([
+      {
+        type: 'circular',
+        path: ['a.ts', 'b.ts', 'a.ts'],
+        analysis: {
+          classification: 'autofix_import_type',
+          confidence: 0.79,
+          reasons: ['mock reason'],
+          upstreamabilityScore: 0.77,
+          plan: {
+            kind: 'import_type',
+            imports: [{ sourceFile: 'a.ts', targetFile: 'b.ts' }],
+          },
+        },
+      },
+    ]);
+
+    const result = await scanRepository('org/below-threshold');
+    const cycles = dbModule.getCyclesByScanId.all(result.scanId) as Array<{ id: number }>;
+    const candidates = dbModule.getFixCandidatesByCycleId.all(cycles[0].id) as Array<{ id: number }>;
+    const patches = dbModule.getPatchesByFixCandidateId.all(candidates[0].id);
+
+    expect(candidates).toHaveLength(1);
+    expect(patches).toEqual([]);
+    expect(generatePatchForCycle).not.toHaveBeenCalled();
   });
 });

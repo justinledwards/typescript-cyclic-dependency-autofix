@@ -22,6 +22,8 @@ export function buildPullRequestBody(candidate: PullRequestCandidate, linkedIssu
       : candidate.replay.file_snapshots.map((snapshot) => snapshot.path);
   const reasons = candidate.reasons.length > 0 ? candidate.reasons : (candidate.replay.candidate.reasons ?? []);
   const confidence = `${Math.round(candidate.confidence * 100)}%`;
+  const upstreamability =
+    candidate.upstreamabilityScore === null ? 'unknown' : `${Math.round(candidate.upstreamabilityScore * 100)}%`;
 
   return [
     `Closes #${linkedIssueNumber}`,
@@ -29,6 +31,7 @@ export function buildPullRequestBody(candidate: PullRequestCandidate, linkedIssu
     '## Summary',
     `- Classification: \`${candidate.classification}\``,
     `- Confidence: ${confidence}`,
+    `- Upstreamability score: ${upstreamability}`,
     `- Cycle: \`${candidate.normalizedPath}\``,
     `- Source target: \`${candidate.replay.source_target}\``,
     `- Source commit: \`${candidate.commitSha}\``,

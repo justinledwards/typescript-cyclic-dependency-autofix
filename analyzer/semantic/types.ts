@@ -45,6 +45,45 @@ export interface HostStateUpdateFixPlan {
 export type PlanningStrategy = 'import_type' | 'direct_import' | 'extract_shared' | 'host_state_update';
 export type StrategySignalValue = boolean | number | string;
 
+export interface PlannerRepositoryProfile {
+  packageManager: 'bun' | 'npm' | 'pnpm' | 'unknown' | 'yarn';
+  workspaceMode: 'single-package' | 'unknown' | 'workspace';
+  validationCommandCount: number;
+}
+
+export interface CycleFeatureVector {
+  cycleSize: number;
+  cycleShape: 'two_file' | 'multi_file';
+  explicitImportEdges: number;
+  loadedFiles: number;
+  missingFiles: number;
+  hasBarrelFile: boolean;
+  hasSharedModuleFile: boolean;
+  typescriptFileCount: number;
+  tsxFileCount: number;
+  packageManager: PlannerRepositoryProfile['packageManager'];
+  workspaceMode: PlannerRepositoryProfile['workspaceMode'];
+  validationCommandCount: number;
+}
+
+export interface StrategyHistoricalEvidence {
+  benchmarkMatches: number;
+  profileMatches: number;
+  approvedReviews: number;
+  rejectedReviews: number;
+  prCandidates: number;
+  ignoredReviews: number;
+  passedValidations: number;
+  failedValidations: number;
+}
+
+export interface HistoricalEvidenceSnapshot {
+  totalBenchmarkCases: number;
+  totalReviewedPatches: number;
+  totalValidatedPatches: number;
+  strategies: Record<PlanningStrategy, StrategyHistoricalEvidence>;
+}
+
 export const missingCycleFilesReason = 'Files participating in the cycle could not be read or found.';
 
 export interface StrategyAttempt {
@@ -53,6 +92,7 @@ export interface StrategyAttempt {
   summary: string;
   reasons: string[];
   signals: Record<string, StrategySignalValue>;
+  baseScore?: number;
   score?: number;
   scoreBreakdown?: string[];
   classification?: Classification;
@@ -65,6 +105,7 @@ export interface CyclePlanningResult {
   cycleSize: number;
   cycleShape: 'two_file' | 'multi_file';
   cycleSignals: Record<string, StrategySignalValue>;
+  features: CycleFeatureVector;
   fallbackClassification: Classification;
   fallbackConfidence: number;
   fallbackReasons: string[];
@@ -72,6 +113,7 @@ export interface CyclePlanningResult {
   selectedClassification?: Classification;
   selectedScore?: number;
   selectionSummary: string;
+  rankedCandidates: StrategyAttempt[];
   attempts: StrategyAttempt[];
 }
 
@@ -97,6 +139,9 @@ export interface CyclePlanningContext {
   importsAToB: ImportDeclaration[];
   importsBToA: ImportDeclaration[];
   cycleSignals: Record<string, StrategySignalValue>;
+  repositoryProfile?: PlannerRepositoryProfile;
+  historicalEvidence: HistoricalEvidenceSnapshot;
+  features: CycleFeatureVector;
 }
 
 export interface StrategyDefinition {

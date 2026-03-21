@@ -12,9 +12,27 @@ import { profileRepository } from './repoProfile.js';
 
 const execFileAsync = promisify(execFile);
 
+export type ValidationFailureCategory =
+  | 'original_cycle_persisted'
+  | 'new_cycles_introduced'
+  | 'repo_validation_failed'
+  | 'typecheck_failed';
+
+export interface ValidationDetails {
+  originalCycleKey: string;
+  beforeCycleCount: number;
+  afterCycleCount: number;
+  introducedCycleCount: number;
+  introducedCycles: string[];
+  repoValidationCommands: string[];
+  failingCommand?: string;
+}
+
 export interface ValidationResult {
   status: 'passed' | 'failed';
   summary: string;
+  failureCategory?: ValidationFailureCategory | null;
+  details?: ValidationDetails;
 }
 
 export async function validateGeneratedPatch(
@@ -25,6 +43,10 @@ export async function validateGeneratedPatch(
   const validationPath = await fs.mkdtemp(path.join(os.tmpdir(), 'cycle-validation-'));
 
   try {
+    const beforeCycleKey = normalizeCyclePath(cycle.path);
+    const baselineCycles = await analyzeRepository(repoPath);
+    const baselineCycleKeys = new Set(baselineCycles.map((baselineCycle) => normalizeCyclePath(baselineCycle.path)));
+
     await fs.cp(repoPath, validationPath, {
       recursive: true,
       filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) && !source.endsWith(`${path.sep}.git`),
@@ -32,14 +54,33 @@ export async function validateGeneratedPatch(
 
     await applySnapshots(validationPath, generatedPatch);
 
-    const beforeCycleKey = normalizeCyclePath(cycle.path);
     const validatedCycles = await analyzeRepository(validationPath);
     const cycleKeys = new Set(validatedCycles.map((validatedCycle) => normalizeCyclePath(validatedCycle.path)));
+    const introducedCycles = [...cycleKeys].filter((cycleKey) => !baselineCycleKeys.has(cycleKey));
+    const validationDetails: ValidationDetails = {
+      originalCycleKey: beforeCycleKey,
+      beforeCycleCount: baselineCycles.length,
+      afterCycleCount: validatedCycles.length,
+      introducedCycleCount: introducedCycles.length,
+      introducedCycles,
+      repoValidationCommands: [],
+    };
 
     if (cycleKeys.has(beforeCycleKey)) {
       return {
         status: 'failed',
         summary: 'Validation failed: the original cycle is still present after applying the rewrite.',
+        failureCategory: 'original_cycle_persisted',
+        details: validationDetails,
+      };
+    }
+
+    if (introducedCycles.length > 0) {
+      return {
+        status: 'failed',
+        summary: `Validation failed: the rewrite introduced ${introducedCycles.length} new cycle(s).`,
+        failureCategory: 'new_cycles_introduced',
+        details: validationDetails,
       };
     }
 
@@ -48,10 +89,16 @@ export async function validateGeneratedPatch(
       validationPath,
       repositoryProfile?.validationCommands ?? [],
     );
+    validationDetails.repoValidationCommands = repositoryProfile?.validationCommands ?? [];
     if (!repoValidationResult.ok) {
       return {
         status: 'failed',
         summary: `Validation failed: repo-native validation command failed (${repoValidationResult.command}).\n${repoValidationResult.output}`,
+        failureCategory: 'repo_validation_failed',
+        details: {
+          ...validationDetails,
+          failingCommand: repoValidationResult.command,
+        },
       };
     }
 
@@ -60,6 +107,8 @@ export async function validateGeneratedPatch(
       return {
         status: 'failed',
         summary: `Validation failed: TypeScript check did not pass.\n${typecheckResult.output}`,
+        failureCategory: 'typecheck_failed',
+        details: validationDetails,
       };
     }
 
@@ -69,7 +118,9 @@ export async function validateGeneratedPatch(
 
     return {
       status: 'passed',
-      summary: `Validation passed: original cycle removed. ${repoValidationSummary}TypeScript check passed. Remaining cycles detected: ${validatedCycles.length}.`,
+      summary: `Validation passed: original cycle removed. ${repoValidationSummary}TypeScript check passed. Cycle count ${baselineCycles.length} -> ${validatedCycles.length}.`,
+      failureCategory: null,
+      details: validationDetails,
     };
   } finally {
     await fs.rm(validationPath, { recursive: true, force: true });

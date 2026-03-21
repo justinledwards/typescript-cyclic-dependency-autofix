@@ -96,6 +96,7 @@ describe('createPullRequestForPatch', () => {
     expect(ghArgs).toContain('codex/issue-42-patch-1');
     expect(ghArgs).toContain('--body');
     expect(ghArgs.at(-1)).toContain('Validation passed: original cycle removed.');
+    expect(ghArgs.at(-1)).toContain('Upstreamability score: 91%');
     expect(ghArgs.at(-1)).toContain('Closes #42');
   });
 
@@ -138,10 +139,52 @@ describe('createPullRequestForPatch', () => {
     ).rejects.toThrow('must be marked approved or pr_candidate');
   });
 
+  it('rejects PR creation when the upstreamability score is below the threshold', async () => {
+    const patchId = insertPatchCandidate({
+      reviewDecision: 'approved',
+      validationStatus: 'passed',
+      remoteUrl: 'git@github.com:acme/widget.git',
+      upstreamabilityScore: 0.55,
+    });
+
+    await expect(
+      createPullRequestForPatch(patchId, {
+        linkedIssueNumber: 77,
+        repoPath,
+        database: db,
+      }),
+    ).rejects.toThrow('below the PR threshold');
+  });
+
+  it('allows PR creation below the threshold when explicitly overridden', async () => {
+    const patchId = insertPatchCandidate({
+      reviewDecision: 'approved',
+      validationStatus: 'passed',
+      remoteUrl: 'git@github.com:acme/widget.git',
+      upstreamabilityScore: 0.55,
+    });
+    await fs.mkdir(path.join(repoPath, 'src'), { recursive: true });
+    await fs.writeFile(path.join(repoPath, 'src', 'a.ts'), 'before', 'utf8');
+
+    repoGit.status.mockResolvedValueOnce({ files: [] }).mockResolvedValueOnce({ files: [{ path: 'src/a.ts' }] });
+
+    await expect(
+      createPullRequestForPatch(patchId, {
+        linkedIssueNumber: 77,
+        repoPath,
+        database: db,
+        allowBelowThreshold: true,
+      }),
+    ).resolves.toMatchObject({
+      branchName: 'codex/issue-77-patch-1',
+    });
+  });
+
   function insertPatchCandidate(args: {
     reviewDecision: 'approved' | 'pr_candidate' | 'pending';
     validationStatus: 'passed' | 'failed';
     remoteUrl: string | null;
+    upstreamabilityScore?: number;
   }): number {
     const repositoryInfo = statements.addRepository.run({
       owner: 'acme',
@@ -195,6 +238,7 @@ describe('createPullRequestForPatch', () => {
         candidate: {
           classification: 'autofix_extract_shared',
           confidence: 0.91,
+          upstreamabilityScore: args.upstreamabilityScore ?? 0.91,
           reasons: ['safe shared symbol'],
         },
         validation: {

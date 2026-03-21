@@ -11,9 +11,13 @@ import {
   SyntaxKind,
 } from 'ts-morph';
 import type { Classification } from '../../db/index.js';
+import { createEmptyHistoricalEvidenceSnapshot } from './evidence.js';
+import { extractCycleFeatures } from './features.js';
 import {
+  applyHistoricalEvidence,
   createNotApplicableAttempt,
   createRejectedAttempt,
+  rankCandidateAttempts,
   scoreDirectImportPlan,
   scoreExtractSharedPlan,
   scoreHostStateUpdatePlan,
@@ -26,8 +30,10 @@ import type {
   DirectImportFixPlan,
   DirectImportSearchResult,
   ExtractSharedFixPlan,
+  HistoricalEvidenceSnapshot,
   HostStateUpdateFixPlan,
   ImportTypeFixPlan,
+  PlannerRepositoryProfile,
   SemanticAnalysisResult,
   StrategyAttempt,
   StrategyDefinition,
@@ -37,7 +43,13 @@ import { missingCycleFilesReason } from './types.js';
 export class SemanticAnalyzer {
   public project: Project;
 
-  constructor(public repoPath: string) {
+  constructor(
+    public repoPath: string,
+    private readonly plannerOptions: {
+      repositoryProfile?: PlannerRepositoryProfile;
+      historicalEvidence?: HistoricalEvidenceSnapshot;
+    } = {},
+  ) {
     this.project = new Project({
       compilerOptions: {
         allowJs: true,
@@ -78,7 +90,8 @@ export class SemanticAnalyzer {
   public planCycle(cyclePath: string[]): CyclePlanningResult {
     const context = this.buildPlanningContext(cyclePath);
     const attempts = this.getStrategyDefinitions().map((strategy) => this.evaluateStrategy(strategy, context));
-    const selectedAttempt = selectBestAttempt(attempts);
+    const rankedCandidates = rankCandidateAttempts(attempts);
+    const selectedAttempt = rankedCandidates[0] ?? selectBestAttempt(attempts);
     const fallbackDecision = this.determineFallbackDecision(context, attempts);
 
     return {
@@ -86,6 +99,7 @@ export class SemanticAnalyzer {
       cycleSize: context.uniqueFiles.length,
       cycleShape: context.cycleShape,
       cycleSignals: context.cycleSignals,
+      features: context.features,
       fallbackClassification: selectedAttempt?.classification ?? fallbackDecision.classification,
       fallbackConfidence: selectedAttempt?.confidence ?? fallbackDecision.confidence,
       fallbackReasons: selectedAttempt?.reasons ?? fallbackDecision.reasons,
@@ -93,8 +107,9 @@ export class SemanticAnalyzer {
       selectedClassification: selectedAttempt?.classification,
       selectedScore: selectedAttempt?.score,
       selectionSummary: selectedAttempt
-        ? `Selected ${selectedAttempt.strategy} with score ${selectedAttempt.score ?? 0} after evaluating ${attempts.length} strategies.`
+        ? `Selected ${selectedAttempt.strategy} with score ${selectedAttempt.score ?? 0} after evaluating ${attempts.length} strategies; ${rankedCandidates.length} candidate(s) cleared the safety filters.`
         : `No strategy cleared the safety filters; falling back to ${fallbackDecision.classification}.`,
+      rankedCandidates,
       attempts,
     };
   }
@@ -110,6 +125,11 @@ export class SemanticAnalyzer {
     const sourceFileB = fileB ? sourceFiles.get(fileB) : undefined;
     const importsAToB = sourceFileA && fileB ? this.findImportsTo(sourceFileA, fileB) : [];
     const importsBToA = sourceFileB && fileA ? this.findImportsTo(sourceFileB, fileA) : [];
+    const cycleSignals = {
+      explicitImportEdges: importsAToB.length + importsBToA.length,
+      loadedFiles: [...sourceFiles.values()].filter(Boolean).length,
+      missingFiles: [...sourceFiles.values()].filter((sourceFile) => !sourceFile).length,
+    };
 
     return {
       cyclePath,
@@ -118,11 +138,15 @@ export class SemanticAnalyzer {
       sourceFiles,
       importsAToB,
       importsBToA,
-      cycleSignals: {
-        explicitImportEdges: importsAToB.length + importsBToA.length,
-        loadedFiles: [...sourceFiles.values()].filter(Boolean).length,
-        missingFiles: [...sourceFiles.values()].filter((sourceFile) => !sourceFile).length,
-      },
+      cycleSignals,
+      repositoryProfile: this.plannerOptions.repositoryProfile,
+      historicalEvidence: this.plannerOptions.historicalEvidence ?? createEmptyHistoricalEvidenceSnapshot(),
+      features: extractCycleFeatures({
+        uniqueFiles,
+        cycleShape,
+        cycleSignals,
+        repositoryProfile: this.plannerOptions.repositoryProfile,
+      }),
     };
   }
 
@@ -248,7 +272,8 @@ export class SemanticAnalyzer {
       return createNotApplicableAttempt(strategy.strategy, applicability.summary, applicability.signals);
     }
 
-    return strategy.evaluate(context);
+    const attempt = strategy.evaluate(context);
+    return applyHistoricalEvidence(attempt, context.features, context.historicalEvidence);
   }
 
   private determineFallbackDecision(

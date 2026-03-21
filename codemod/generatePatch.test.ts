@@ -50,6 +50,8 @@ describe('generatePatchForCycle', () => {
 
     expect(patch).not.toBeNull();
     expect(patch?.patchText).toContain('import type { BType }');
+    expect(patch?.patchText).not.toContain('-export const aValue = 1 as BType;');
+    expect(patch?.patchText).not.toContain('+export const aValue = 1 as BType;');
     expect(patch?.touchedFiles).toEqual(['a.ts']);
   });
 
@@ -82,6 +84,8 @@ describe('generatePatchForCycle', () => {
     expect(patch).not.toBeNull();
     expect(patch?.patchText).toContain('helperB.shared');
     expect(patch?.patchText).toContain("export const helperB = () => 'ok';");
+    expect(patch?.patchText).not.toContain('-export const mainA = () => helperB();');
+    expect(patch?.patchText).not.toContain('+export const mainA = () => helperB();');
     expect(patch?.touchedFiles).toEqual(['b.ts', 'a.ts', 'helperB.shared.ts']);
     const sourceSnapshot = patch?.fileSnapshots.find((snapshot) => snapshot.path === 'b.ts');
     expect(sourceSnapshot?.after).toMatch(/export \{ helperB \} from ['"]\.\/helperB\.shared['"];/);
@@ -121,6 +125,8 @@ describe('generatePatchForCycle', () => {
 
     expect(patch).not.toBeNull();
     expect(patch?.patchText).toContain("+import { Foo } from './foo';");
+    expect(patch?.patchText).not.toContain('-export const appValue = Foo + 1;');
+    expect(patch?.patchText).not.toContain('+export const appValue = Foo + 1;');
     expect(patch?.touchedFiles).toEqual(['app.ts']);
   });
 

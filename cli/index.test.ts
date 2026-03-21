@@ -126,13 +126,47 @@ vi.mock('../analyzer/analyzer.js', () => ({
             loadedFiles: 2,
             missingFiles: 0,
           },
+          features: {
+            cycleSize: 2,
+            cycleShape: 'two_file',
+            explicitImportEdges: 2,
+            loadedFiles: 2,
+            missingFiles: 0,
+            hasBarrelFile: false,
+            hasSharedModuleFile: false,
+            typescriptFileCount: 2,
+            tsxFileCount: 0,
+            packageManager: 'unknown',
+            workspaceMode: 'unknown',
+            validationCommandCount: 0,
+          },
           fallbackClassification: 'autofix_import_type',
           fallbackConfidence: 0.9,
           fallbackReasons: ['Cycle can be resolved by converting concrete imports to type-only imports.'],
           selectedStrategy: 'import_type',
           selectedClassification: 'autofix_import_type',
           selectedScore: 0.94,
-          selectionSummary: 'Selected import_type with score 0.94 after evaluating 3 strategies.',
+          selectionSummary:
+            'Selected import_type with score 0.94 after evaluating 4 strategies; 1 candidate(s) cleared the safety filters.',
+          rankedCandidates: [
+            {
+              strategy: 'import_type',
+              status: 'candidate',
+              summary: 'Convert 2 import edge(s) to type-only imports.',
+              reasons: ['Cycle can be resolved by converting concrete imports to type-only imports.'],
+              signals: {
+                touchedFiles: 2,
+                importEdges: 2,
+                introducesNewFile: false,
+                preservesSourceExports: true,
+              },
+              baseScore: 0.94,
+              score: 0.94,
+              scoreBreakdown: ['base 0.97 for least-invasive rewrite', '-0.03 for touching 2 files'],
+              classification: 'autofix_import_type',
+              confidence: 0.9,
+            },
+          ],
           attempts: [],
         },
       },
@@ -260,13 +294,47 @@ describe('CLI', () => {
                     loadedFiles: 2,
                     missingFiles: 0,
                   },
+                  features: {
+                    cycleSize: 2,
+                    cycleShape: 'two_file',
+                    explicitImportEdges: 2,
+                    loadedFiles: 2,
+                    missingFiles: 0,
+                    hasBarrelFile: false,
+                    hasSharedModuleFile: false,
+                    typescriptFileCount: 2,
+                    tsxFileCount: 0,
+                    packageManager: 'unknown',
+                    workspaceMode: 'unknown',
+                    validationCommandCount: 0,
+                  },
                   fallbackClassification: 'autofix_import_type',
                   fallbackConfidence: 0.9,
                   fallbackReasons: ['Cycle can be resolved by converting concrete imports to type-only imports.'],
                   selectedStrategy: 'import_type',
                   selectedClassification: 'autofix_import_type',
                   selectedScore: 0.94,
-                  selectionSummary: 'Selected import_type with score 0.94 after evaluating 3 strategies.',
+                  selectionSummary:
+                    'Selected import_type with score 0.94 after evaluating 4 strategies; 1 candidate(s) cleared the safety filters.',
+                  rankedCandidates: [
+                    {
+                      strategy: 'import_type',
+                      status: 'candidate',
+                      summary: 'Convert 2 import edge(s) to type-only imports.',
+                      reasons: ['Cycle can be resolved by converting concrete imports to type-only imports.'],
+                      signals: {
+                        touchedFiles: 2,
+                        importEdges: 2,
+                        introducesNewFile: false,
+                        preservesSourceExports: true,
+                      },
+                      baseScore: 0.94,
+                      score: 0.94,
+                      scoreBreakdown: ['base 0.97 for least-invasive rewrite', '-0.03 for touching 2 files'],
+                      classification: 'autofix_import_type',
+                      confidence: 0.9,
+                    },
+                  ],
                   attempts: [],
                 },
               },
@@ -355,6 +423,8 @@ describe('CLI', () => {
       branchName: undefined,
       baseBranch: undefined,
       repoPath: undefined,
+      minimumUpstreamabilityScore: undefined,
+      allowBelowThreshold: undefined,
     });
     expect(consoleSpy).toHaveBeenCalledWith(
       'Created PR https://github.com/acme/widget/pull/123 from branch codex/issue-42-patch-12',
@@ -409,6 +479,36 @@ describe('CLI', () => {
 
     consoleErrSpy.mockRestore();
     exitSpy.mockRestore();
+  });
+
+  it('create:pr command forwards threshold options', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'create:pr',
+      '12',
+      '--issue',
+      '42',
+      '--min-score',
+      '0.9',
+      '--allow-below-threshold',
+    ]);
+
+    expect(vi.mocked(createPullRequestForPatch)).toHaveBeenLastCalledWith(12, {
+      linkedIssueNumber: 42,
+      title: undefined,
+      branchName: undefined,
+      baseBranch: undefined,
+      repoPath: undefined,
+      minimumUpstreamabilityScore: 0.9,
+      allowBelowThreshold: true,
+    });
+
+    consoleSpy.mockRestore();
   });
 
   it('create:pr command exits on invalid patch id', async () => {

@@ -157,6 +157,8 @@ export function createProgram(): Command {
     .option('--branch <branchName>', 'Branch name override')
     .option('--base <branchName>', 'Base branch override')
     .option('--repo-path <path>', 'Use an existing clean checkout instead of a scratch clone')
+    .option('--min-score <score>', 'Minimum upstreamability score required before opening a PR', parseScore)
+    .option('--allow-below-threshold', 'Allow PR creation even when the stored upstreamability score is too low')
     .description('Create a branch and GitHub pull request from a stored validated patch')
     .action(
       async (
@@ -167,6 +169,8 @@ export function createProgram(): Command {
           branch?: string;
           base?: string;
           repoPath?: string;
+          minScore?: number;
+          allowBelowThreshold?: boolean;
         },
       ) => {
         const numericPatchId = Number(patchId);
@@ -188,6 +192,8 @@ export function createProgram(): Command {
             branchName: options.branch,
             baseBranch: options.base,
             repoPath: options.repoPath,
+            minimumUpstreamabilityScore: options.minScore,
+            allowBelowThreshold: options.allowBelowThreshold,
           });
           console.log(`Created PR ${result.prUrl} from branch ${result.branchName}`);
         } catch (error) {
@@ -213,6 +219,15 @@ function parseInteger(value: string): number {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed < 0) {
     throw new Error(`Expected a non-negative integer. Received: ${value}`);
+  }
+
+  return parsed;
+}
+
+function parseScore(value: string): number {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(`Expected a score between 0 and 1. Received: ${value}`);
   }
 
   return parsed;

@@ -1,6 +1,7 @@
 import type { Database as DatabaseType } from 'better-sqlite3';
 import simpleGit from 'simple-git';
 import { getDb } from '../../db/index.js';
+import { resolveMinimumUpstreamabilityScore } from '../promotionPolicy.js';
 import { loadPullRequestCandidate } from './candidate.js';
 import { applyFileSnapshots, ensureCheckoutIsClean, prepareCheckout } from './checkout.js';
 import { buildPullRequestBody, buildPullRequestTitle, createGithubPullRequest } from './render.js';
@@ -22,6 +23,21 @@ export async function createPullRequestForPatch(
 
   const database: DatabaseType = options.database ?? getDb();
   const candidate = loadPullRequestCandidate(patchId, database);
+  const minimumScore = resolveMinimumUpstreamabilityScore(options.minimumUpstreamabilityScore);
+
+  if (!options.allowBelowThreshold) {
+    if (candidate.upstreamabilityScore === null) {
+      throw new Error(
+        `Patch ${patchId} does not have an upstreamability score. Re-scan it or pass allowBelowThreshold for a manual experiment.`,
+      );
+    }
+
+    if (candidate.upstreamabilityScore < minimumScore) {
+      throw new Error(
+        `Patch ${patchId} scored ${candidate.upstreamabilityScore.toFixed(2)}, below the PR threshold of ${minimumScore.toFixed(2)}.`,
+      );
+    }
+  }
 
   const branchName = options.branchName ?? `codex/issue-${options.linkedIssueNumber}-patch-${patchId}`;
   const baseBranch = options.baseBranch ?? candidate.defaultBranch;

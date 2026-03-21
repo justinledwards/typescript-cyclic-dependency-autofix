@@ -41,6 +41,7 @@ export interface ReplayBundle {
   candidate?: {
     classification?: string;
     confidence?: number;
+    upstreamabilityScore?: number;
     reasons?: string[] | null;
   };
   validation?: {
@@ -74,6 +75,7 @@ export interface RequiredReplayBundle {
   candidate: {
     classification: string;
     confidence: number;
+    upstreamabilityScore?: number;
     reasons: string[] | null;
   };
   validation: {
@@ -98,6 +100,7 @@ export interface PullRequestCandidate {
   validationSummary: string;
   classification: string;
   confidence: number;
+  upstreamabilityScore: number | null;
   reasons: string[];
   normalizedPath: string;
   cyclePath: string[];
@@ -114,6 +117,8 @@ export interface CreatePullRequestOptions {
   repoPath?: string;
   checkoutRoot?: string;
   remoteName?: string;
+  minimumUpstreamabilityScore?: number;
+  allowBelowThreshold?: boolean;
   database?: DatabaseType;
 }
 

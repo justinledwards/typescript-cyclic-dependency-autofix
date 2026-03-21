@@ -57,7 +57,13 @@ describe('validateGeneratedPatch', () => {
     );
 
     expect(result.status).toBe('passed');
+    expect(result.failureCategory).toBeNull();
     expect(result.summary).toContain('original cycle removed');
+    expect(result.details).toMatchObject({
+      beforeCycleCount: 0,
+      afterCycleCount: 0,
+      introducedCycleCount: 0,
+    });
   });
 
   it('runs repo-native validation commands before the TypeScript check', async () => {
@@ -143,6 +149,7 @@ describe('validateGeneratedPatch', () => {
     );
 
     expect(result.status).toBe('failed');
+    expect(result.failureCategory).toBe('original_cycle_persisted');
     expect(result.summary).toContain('original cycle is still present');
   });
 
@@ -178,6 +185,43 @@ describe('validateGeneratedPatch', () => {
     );
 
     expect(result.status).toBe('failed');
+    expect(result.failureCategory).toBe('original_cycle_persisted');
     expect(result.summary).toContain('original cycle is still present');
+  });
+
+  it('fails when the rewrite introduces a new cycle that was not present before', async () => {
+    const repoPath = await createRepo({
+      'a.ts': 'export const a = 1;\n',
+      'b.ts': 'export const b = 2;\n',
+    });
+
+    vi.spyOn(analyzerModule, 'analyzeRepository')
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ type: 'circular', path: ['x.ts', 'y.ts', 'x.ts'] } as CircularDependency]);
+
+    const generatedPatch: GeneratedPatch = {
+      patchText: 'diff',
+      touchedFiles: ['a.ts'],
+      validationStatus: 'pending',
+      validationSummary: 'pending',
+      fileSnapshots: [
+        {
+          path: 'a.ts',
+          before: 'export const a = 1;\n',
+          after: 'export const a = 2;\n',
+        },
+      ],
+    };
+
+    const result = await validateGeneratedPatch(
+      repoPath,
+      { type: 'circular', path: ['a.ts', 'b.ts', 'a.ts'] },
+      generatedPatch,
+    );
+
+    expect(result.status).toBe('failed');
+    expect(result.failureCategory).toBe('new_cycles_introduced');
+    expect(result.summary).toContain('introduced 1 new cycle');
+    expect(result.details?.introducedCycles).toEqual(['x.ts -> y.ts -> x.ts']);
   });
 });

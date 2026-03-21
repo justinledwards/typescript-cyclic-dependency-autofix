@@ -32,6 +32,7 @@ export interface PatchReplayBundle {
   candidate: {
     classification: string;
     confidence: number;
+    upstreamabilityScore?: number;
     reasons: string[] | null;
   };
   validation: ValidationResult;

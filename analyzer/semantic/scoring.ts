@@ -1,7 +1,9 @@
 import path from 'node:path';
 import type {
+  CycleFeatureVector,
   DirectImportFixPlan,
   ExtractSharedFixPlan,
+  HistoricalEvidenceSnapshot,
   HostStateUpdateFixPlan,
   ImportTypeFixPlan,
   PlanningStrategy,
@@ -114,27 +116,103 @@ export function scoreHostStateUpdatePlan(plan: HostStateUpdateFixPlan): {
 }
 
 export function selectBestAttempt(attempts: StrategyAttempt[]): StrategyAttempt | undefined {
-  let bestAttempt: StrategyAttempt | undefined;
+  return rankCandidateAttempts(attempts)[0];
+}
+
+export function rankCandidateAttempts(attempts: StrategyAttempt[]): StrategyAttempt[] {
+  const rankedAttempts: StrategyAttempt[] = [];
 
   for (const attempt of attempts) {
     if (attempt.status !== 'candidate') {
       continue;
     }
 
-    if (!bestAttempt) {
-      bestAttempt = attempt;
-      continue;
+    let insertAt = 0;
+    while (insertAt < rankedAttempts.length && compareAttempts(rankedAttempts[insertAt], attempt) < 0) {
+      insertAt += 1;
     }
 
-    const scoreDelta = (attempt.score ?? 0) - (bestAttempt.score ?? 0);
-    const confidenceDelta = (attempt.confidence ?? 0) - (bestAttempt.confidence ?? 0);
+    rankedAttempts.splice(insertAt, 0, attempt);
+  }
 
-    if (scoreDelta > 0 || (scoreDelta === 0 && confidenceDelta > 0)) {
-      bestAttempt = attempt;
+  return rankedAttempts;
+}
+
+export function applyHistoricalEvidence(
+  attempt: StrategyAttempt,
+  features: CycleFeatureVector,
+  historicalEvidence: HistoricalEvidenceSnapshot,
+): StrategyAttempt {
+  if (attempt.status !== 'candidate') {
+    return attempt;
+  }
+
+  const evidence = historicalEvidence.strategies[attempt.strategy];
+  if (!evidence) {
+    return attempt;
+  }
+
+  let adjustedScore = attempt.score ?? 0;
+  const breakdown = [...(attempt.scoreBreakdown ?? [])];
+
+  if (evidence.benchmarkMatches > 0) {
+    const benchmarkBonus = Math.min(0.03, evidence.benchmarkMatches * 0.005);
+    adjustedScore += benchmarkBonus;
+    breakdown.push(`+${benchmarkBonus.toFixed(2)} from ${evidence.benchmarkMatches} matching benchmark case(s)`);
+  }
+
+  if (evidence.profileMatches > 0) {
+    const profileBonus = Math.min(0.02, evidence.profileMatches * 0.01);
+    adjustedScore += profileBonus;
+    breakdown.push(`+${profileBonus.toFixed(2)} from repository-profile matches in historical cases`);
+  }
+
+  const reviewedCount =
+    evidence.approvedReviews + evidence.rejectedReviews + evidence.prCandidates + evidence.ignoredReviews;
+  if (reviewedCount > 0) {
+    const positiveReviewWeight = evidence.approvedReviews + evidence.prCandidates * 0.5;
+    const approvalRatio = positiveReviewWeight / reviewedCount;
+    const reviewDelta = clampSignedAdjustment((approvalRatio - 0.5) * 0.08, 0.04);
+    if (reviewDelta !== 0) {
+      adjustedScore += reviewDelta;
+      breakdown.push(`${formatSignedScore(reviewDelta)} from review outcomes (${reviewedCount} reviewed patch(es))`);
     }
   }
 
-  return bestAttempt;
+  const validatedCount = evidence.passedValidations + evidence.failedValidations;
+  if (validatedCount > 0) {
+    const validationRatio = evidence.passedValidations / validatedCount;
+    const validationDelta = clampSignedAdjustment((validationRatio - 0.5) * 0.06, 0.03);
+    if (validationDelta !== 0) {
+      adjustedScore += validationDelta;
+      breakdown.push(
+        `${formatSignedScore(validationDelta)} from validation history (${evidence.passedValidations}/${validatedCount} passed)`,
+      );
+    }
+  }
+
+  if (attempt.strategy === 'direct_import' && features.hasBarrelFile) {
+    adjustedScore += 0.01;
+    breakdown.push('+0.01 because the cycle already contains a barrel entrypoint');
+  }
+
+  if (attempt.strategy === 'extract_shared' && features.validationCommandCount > 2) {
+    adjustedScore -= 0.01;
+    breakdown.push('-0.01 because new shared modules are more fragile under heavier repo validation');
+  }
+
+  return {
+    ...attempt,
+    score: clampScore(adjustedScore),
+    scoreBreakdown: breakdown,
+    signals: {
+      ...attempt.signals,
+      historicalBenchmarkMatches: evidence.benchmarkMatches,
+      historicalProfileMatches: evidence.profileMatches,
+      historicalReviewedPatches: reviewedCount,
+      historicalValidatedPatches: validatedCount,
+    },
+  };
 }
 
 export function createNotApplicableAttempt(
@@ -168,4 +246,21 @@ export function createRejectedAttempt(
 
 function clampScore(value: number): number {
   return Math.max(0, Math.min(1, Number(value.toFixed(2))));
+}
+
+function compareAttempts(left: StrategyAttempt, right: StrategyAttempt): number {
+  const scoreDelta = (right.score ?? 0) - (left.score ?? 0);
+  if (scoreDelta !== 0) {
+    return scoreDelta;
+  }
+
+  return (right.confidence ?? 0) - (left.confidence ?? 0);
+}
+
+function clampSignedAdjustment(value: number, cap: number): number {
+  return Number(Math.max(-cap, Math.min(cap, value)).toFixed(2));
+}
+
+function formatSignedScore(value: number): string {
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}`;
 }

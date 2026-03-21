@@ -73,6 +73,7 @@ export function loadPullRequestCandidate(patchId: number, database: DatabaseType
     validationSummary: row.validation_summary ?? replay.validation.summary,
     classification: row.classification,
     confidence: row.confidence,
+    upstreamabilityScore: replay.candidate.upstreamabilityScore ?? null,
     reasons: parseJsonArray(row.reasons),
     normalizedPath: row.normalized_path,
     cyclePath: parseJsonArray(row.participating_files),
@@ -115,6 +116,7 @@ function parseReplayBundle(replayBundle: string | null, row: PullRequestCandidat
     candidate: {
       classification: parsed.candidate?.classification ?? row.classification,
       confidence: parsed.candidate?.confidence ?? row.confidence,
+      upstreamabilityScore: parsed.candidate?.upstreamabilityScore,
       reasons: parsed.candidate?.reasons ?? parseJsonArray(row.reasons),
     },
     validation: {

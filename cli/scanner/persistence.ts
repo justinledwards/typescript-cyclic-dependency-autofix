@@ -1,5 +1,6 @@
 import type { SimpleGit } from 'simple-git';
 import { canonicalizeCyclePath, normalizeCyclePath } from '../../analyzer/cycleNormalization.js';
+import type { SemanticAnalysisResult } from '../../analyzer/semantic.js';
 import type { GeneratedPatch } from '../../codemod/generatePatch.js';
 import { generatePatchForCycle } from '../../codemod/generatePatch.js';
 import type { RepositoryDTO } from '../../db/index.js';
@@ -13,6 +14,7 @@ import {
   getRepositoryByOwnerName,
   updateRepositoryLocalPath,
 } from '../../db/index.js';
+import { shouldPromotePatchCandidate } from '../promotionPolicy.js';
 import type { ValidationResult } from '../validation.js';
 import { validateGeneratedPatch } from '../validation.js';
 import type { PatchReplayBundle, ScannedCycle } from './types.js';
@@ -104,6 +106,10 @@ export async function persistCycle(
     reasons: JSON.stringify(persistedCycle.analysis.reasons),
   });
 
+  if (!shouldGeneratePatch(persistedCycle.analysis)) {
+    return;
+  }
+
   const generatedPatch = await generatePatchForCycle(repoPath, persistedCycle, persistedCycle.analysis);
   if (!generatedPatch) {
     return;
@@ -140,6 +146,15 @@ export async function persistCycle(
   })(patchPayload, JSON.stringify(replayBundle));
 }
 
+function shouldGeneratePatch(analysis: SemanticAnalysisResult): boolean {
+  return shouldPromotePatchCandidate({
+    classification: analysis.classification,
+    confidence: analysis.confidence,
+    upstreamabilityScore: analysis.upstreamabilityScore,
+    hasPlan: Boolean(analysis.plan),
+  });
+}
+
 function buildPatchReplayBundle(args: {
   scanId: number;
   sourceTarget: string;
@@ -174,6 +189,7 @@ function buildPatchReplayBundle(args: {
     candidate: {
       classification: args.cycle.analysis?.classification ?? 'unsupported',
       confidence: args.cycle.analysis?.confidence ?? 0,
+      upstreamabilityScore: args.cycle.analysis?.upstreamabilityScore,
       reasons: args.cycle.analysis?.reasons ?? null,
     },
     validation: args.validation,

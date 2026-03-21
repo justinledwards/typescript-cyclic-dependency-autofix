@@ -185,7 +185,7 @@ describe('Scanner Worker', () => {
     await expect(scanRepository('org/err')).rejects.toThrow('Analyzer error');
 
     const repo = dbModule.getRepositoryByOwnerName.get('org', 'err') as { status: string };
-    expect(repo.status).toBe('validation_failed');
+    expect(repo.status).toBe('analysis_failed');
   });
 
   it('handles github.com url without slash safely', async () => {

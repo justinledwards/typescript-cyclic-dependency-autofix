@@ -8,6 +8,7 @@ import type { CircularDependency } from '../analyzer/analyzer.js';
 import { analyzeRepository } from '../analyzer/analyzer.js';
 import { normalizeCyclePath } from '../analyzer/cycleNormalization.js';
 import type { GeneratedPatch } from '../codemod/generatePatch.js';
+import { createNoopLogger, type StructuredLogger, serializeError } from './observability.js';
 import { profileRepository } from './repoProfile.js';
 
 const execFileAsync = promisify(execFile);
@@ -35,17 +36,28 @@ export interface ValidationResult {
   details?: ValidationDetails;
 }
 
+interface ValidationOptions {
+  logger?: StructuredLogger;
+}
+
 export async function validateGeneratedPatch(
   repoPath: string,
   cycle: CircularDependency,
   generatedPatch: GeneratedPatch,
+  options: ValidationOptions = {},
 ): Promise<ValidationResult> {
+  const logger = options.logger ?? createNoopLogger();
   const validationPath = await fs.mkdtemp(path.join(os.tmpdir(), 'cycle-validation-'));
 
   try {
     const beforeCycleKey = normalizeCyclePath(cycle.path);
     const baselineCycles = await analyzeRepository(repoPath);
     const baselineCycleKeys = new Set(baselineCycles.map((baselineCycle) => normalizeCyclePath(baselineCycle.path)));
+    logger.info('validation.workspace.created', {
+      repoPath,
+      validationPath,
+      baselineCycleCount: baselineCycles.length,
+    });
 
     await fs.cp(repoPath, validationPath, {
       recursive: true,
@@ -53,6 +65,9 @@ export async function validateGeneratedPatch(
     });
 
     await applySnapshots(validationPath, generatedPatch);
+    logger.info('validation.snapshots.applied', {
+      snapshotCount: generatedPatch.fileSnapshots.length,
+    });
 
     const validatedCycles = await analyzeRepository(validationPath);
     const cycleKeys = new Set(validatedCycles.map((validatedCycle) => normalizeCyclePath(validatedCycle.path)));
@@ -65,6 +80,11 @@ export async function validateGeneratedPatch(
       introducedCycles,
       repoValidationCommands: [],
     };
+    logger.info('validation.analysis.completed', {
+      beforeCycleCount: baselineCycles.length,
+      afterCycleCount: validatedCycles.length,
+      introducedCycleCount: introducedCycles.length,
+    });
 
     if (cycleKeys.has(beforeCycleKey)) {
       return {
@@ -84,10 +104,11 @@ export async function validateGeneratedPatch(
       };
     }
 
-    const repositoryProfile = await safeProfileRepository(validationPath);
+    const repositoryProfile = await safeProfileRepository(validationPath, logger);
     const repoValidationResult = await runRepoValidationCommands(
       validationPath,
       repositoryProfile?.validationCommands ?? [],
+      logger,
     );
     validationDetails.repoValidationCommands = repositoryProfile?.validationCommands ?? [];
     if (!repoValidationResult.ok) {
@@ -102,7 +123,7 @@ export async function validateGeneratedPatch(
       };
     }
 
-    const typecheckResult = await runTypecheckIfPresent(validationPath);
+    const typecheckResult = await runTypecheckIfPresent(validationPath, logger);
     if (!typecheckResult.ok) {
       return {
         status: 'failed',
@@ -135,10 +156,14 @@ async function applySnapshots(repoPath: string, generatedPatch: GeneratedPatch):
   }
 }
 
-async function safeProfileRepository(repoPath: string) {
+async function safeProfileRepository(repoPath: string, logger: StructuredLogger) {
   try {
     return await profileRepository(repoPath);
-  } catch {
+  } catch (error) {
+    logger.warn('validation.profile.failed', {
+      repoPath,
+      ...serializeError(error),
+    });
     return void 0;
   }
 }
@@ -146,6 +171,7 @@ async function safeProfileRepository(repoPath: string) {
 async function runRepoValidationCommands(
   repoPath: string,
   validationCommands: string[],
+  logger: StructuredLogger,
 ): Promise<
   | { ok: true; command: string | null }
   | {
@@ -155,7 +181,7 @@ async function runRepoValidationCommands(
     }
 > {
   for (const command of validationCommands) {
-    const result = await runValidationCommand(repoPath, command);
+    const result = await runValidationCommand(repoPath, command, logger);
     if (!result.ok) {
       return result;
     }
@@ -167,6 +193,7 @@ async function runRepoValidationCommands(
 async function runValidationCommand(
   repoPath: string,
   command: string,
+  logger: StructuredLogger,
 ): Promise<
   | { ok: true; command: string }
   | {
@@ -186,7 +213,13 @@ async function runValidationCommand(
   }
 
   try {
+    logger.info('validation.command.started', {
+      command,
+    });
     await execFileAsync(binary, args, { cwd: repoPath });
+    logger.info('validation.command.completed', {
+      command,
+    });
     return { ok: true, command };
   } catch (error) {
     let output = 'Unknown validation failure';
@@ -196,16 +229,27 @@ async function runValidationCommand(
       output = error.message;
     }
 
+    logger.error('validation.command.failed', {
+      command,
+      output,
+      ...serializeError(error),
+    });
     return { ok: false, command, output };
   }
 }
 
-async function runTypecheckIfPresent(repoPath: string): Promise<{ ok: true } | { ok: false; output: string }> {
+async function runTypecheckIfPresent(
+  repoPath: string,
+  logger: StructuredLogger,
+): Promise<{ ok: true } | { ok: false; output: string }> {
   const tsconfigPath = path.join(repoPath, 'tsconfig.json');
 
   try {
     await fs.access(tsconfigPath);
   } catch {
+    logger.info('validation.typecheck.skipped', {
+      reason: 'No tsconfig.json present in the validation checkout.',
+    });
     return { ok: true };
   }
 
@@ -218,8 +262,14 @@ async function runTypecheckIfPresent(repoPath: string): Promise<{ ok: true } | {
   }
 
   try {
+    logger.info('validation.typecheck.started', {
+      tsconfigPath,
+    });
     await execFileAsync(process.execPath, [tscEntrypoint, '--noEmit', '--project', tsconfigPath], {
       cwd: repoPath,
+    });
+    logger.info('validation.typecheck.completed', {
+      tsconfigPath,
     });
     return { ok: true };
   } catch (error) {
@@ -230,6 +280,11 @@ async function runTypecheckIfPresent(repoPath: string): Promise<{ ok: true } | {
       output = error.message;
     }
 
+    logger.error('validation.typecheck.failed', {
+      tsconfigPath,
+      output,
+      ...serializeError(error),
+    });
     return { ok: false, output };
   }
 }

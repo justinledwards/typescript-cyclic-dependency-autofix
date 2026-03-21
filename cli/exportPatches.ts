@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import { getDb } from '../db/index.js';
+import { createNoopLogger, type StructuredLogger } from './observability.js';
 
 const DEFAULT_OUTPUT_DIR = path.join(process.cwd(), 'exports', 'patches');
 
@@ -26,6 +27,7 @@ export interface ExportResult {
 export async function exportApprovedPatches(
   outputDir = DEFAULT_OUTPUT_DIR,
   database: DatabaseType = getDb(),
+  logger: StructuredLogger = createNoopLogger(),
 ): Promise<ExportResult> {
   const rows = database
     .prepare(`
@@ -56,6 +58,10 @@ export async function exportApprovedPatches(
     ORDER BY r.owner ASC, r.name ASC, s.id ASC, fc.id ASC, p.id ASC
   `)
     .all() as ExportablePatchRow[];
+  logger.info('export.started', {
+    outputDir,
+    patchCount: rows.length,
+  });
 
   await fs.mkdir(outputDir, { recursive: true });
 
@@ -67,11 +73,16 @@ export async function exportApprovedPatches(
     exportedFiles.push(filePath);
   }
 
-  return {
+  const result = {
     outputDir,
     exportedCount: exportedFiles.length,
     files: exportedFiles,
   };
+  logger.info('export.completed', {
+    outputDir,
+    exportedCount: result.exportedCount,
+  });
+  return result;
 }
 
 function buildExportPath(outputDir: string, row: ExportablePatchRow): string {

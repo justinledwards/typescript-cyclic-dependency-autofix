@@ -14,6 +14,7 @@ import {
   getRepositoryByOwnerName,
   updateRepositoryLocalPath,
 } from '../../db/index.js';
+import { type ConcurrencyLimiter, createNoopLogger, type StructuredLogger, serializeError } from '../observability.js';
 import { shouldPromotePatchCandidate } from '../promotionPolicy.js';
 import type { ValidationResult } from '../validation.js';
 import { validateGeneratedPatch } from '../validation.js';
@@ -81,7 +82,12 @@ export async function persistCycle(
   remoteUrl: string | null,
   repository: RepositoryDTO,
   cycle: ScannedCycle,
+  options: {
+    logger?: StructuredLogger;
+    validationLimiter?: ConcurrencyLimiter;
+  } = {},
 ): Promise<void> {
+  const logger = options.logger ?? createNoopLogger();
   const canonicalPath = canonicalizeCyclePath(cycle.path);
   const persistedCycle = {
     ...cycle,
@@ -94,30 +100,94 @@ export async function persistCycle(
     participating_files: JSON.stringify(canonicalPath),
     raw_payload: JSON.stringify(persistedCycle),
   });
+  const cycleId = cycleInfo.lastInsertRowid as number;
+  const cycleLogger = logger.child({
+    cycleId,
+    normalizedPath: normalizeCyclePath(canonicalPath),
+  });
+  cycleLogger.info('cycle.persisted', {
+    participatingFiles: canonicalPath.length,
+  });
 
   if (!persistedCycle.analysis) {
+    cycleLogger.warn('cycle.unclassified', {
+      reason: 'No semantic analysis was attached to the cycle payload.',
+    });
     return;
   }
 
   const fixCandidateInfo = addFixCandidate.run({
-    cycle_id: cycleInfo.lastInsertRowid as number,
+    cycle_id: cycleId,
     classification: persistedCycle.analysis.classification,
     confidence: persistedCycle.analysis.confidence,
     reasons: JSON.stringify(persistedCycle.analysis.reasons),
   });
+  const fixCandidateId = fixCandidateInfo.lastInsertRowid as number;
+  const candidateLogger = cycleLogger.child({
+    fixCandidateId,
+    classification: persistedCycle.analysis.classification,
+  });
+  candidateLogger.info('cycle.classified', {
+    confidence: persistedCycle.analysis.confidence,
+    upstreamabilityScore: persistedCycle.analysis.upstreamabilityScore ?? null,
+  });
 
   if (!shouldGeneratePatch(persistedCycle.analysis)) {
+    candidateLogger.info('patch.skipped', {
+      reason: 'Candidate did not clear the promotion policy thresholds.',
+      confidence: persistedCycle.analysis.confidence,
+      upstreamabilityScore: persistedCycle.analysis.upstreamabilityScore ?? null,
+    });
     return;
   }
 
-  const generatedPatch = await generatePatchForCycle(repoPath, persistedCycle, persistedCycle.analysis);
+  candidateLogger.info('patch.generation.started', {
+    repoPath,
+  });
+
+  let generatedPatch: GeneratedPatch | null;
+  try {
+    generatedPatch = await generatePatchForCycle(repoPath, persistedCycle, persistedCycle.analysis);
+  } catch (error) {
+    candidateLogger.error('patch.generation.failed', {
+      ...serializeError(error),
+    });
+    throw error;
+  }
+
   if (!generatedPatch) {
+    candidateLogger.warn('patch.generation.skipped', {
+      reason: 'No executable patch could be generated for the selected plan.',
+    });
     return;
   }
 
-  const validation = await validateGeneratedPatch(repoPath, persistedCycle, generatedPatch);
+  candidateLogger.info('patch.generated', {
+    touchedFiles: generatedPatch.touchedFiles.length,
+  });
+
+  candidateLogger.info('validation.started', {
+    queued: Boolean(options.validationLimiter),
+  });
+  const validationLogger = candidateLogger.child({
+    touchedFiles: generatedPatch.touchedFiles.length,
+  });
+  const validation = options.validationLimiter
+    ? await options.validationLimiter.run(async () =>
+        validateGeneratedPatch(repoPath, persistedCycle, generatedPatch, {
+          logger: validationLogger,
+        }),
+      )
+    : await validateGeneratedPatch(repoPath, persistedCycle, generatedPatch, {
+        logger: validationLogger,
+      });
+  candidateLogger.info('validation.completed', {
+    status: validation.status,
+    failureCategory: validation.failureCategory ?? null,
+  });
+
   const patchPayload = {
-    fix_candidate_id: fixCandidateInfo.lastInsertRowid as number,
+    fix_candidate_id: fixCandidateId,
     patch_text: generatedPatch.patchText,
     touched_files: JSON.stringify(generatedPatch.touchedFiles),
     validation_status: validation.status,
@@ -136,6 +206,10 @@ export async function persistCycle(
 
   getDb().transaction((patchRow: typeof patchPayload, replayBundleJson: string) => {
     const patchInfo = addPatch.run(patchRow);
+    candidateLogger.info('patch.persisted', {
+      patchId: patchInfo.lastInsertRowid as number,
+      validationStatus: validation.status,
+    });
     addPatchReplay.run({
       patch_id: patchInfo.lastInsertRowid as number,
       scan_id: scanId,

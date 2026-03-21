@@ -1,8 +1,14 @@
 import type { CircularDependency } from '../../analyzer/analyzer.js';
 import type { GeneratedPatch } from '../../codemod/generatePatch.js';
+import type { ConcurrencyLimiter, StructuredLogger } from '../observability.js';
 import type { ValidationResult } from '../validation.js';
 
 export type ScannedCycle = CircularDependency;
+
+export interface ScanRepositoryOptions {
+  logger?: StructuredLogger;
+  validationLimiter?: ConcurrencyLimiter;
+}
 
 export interface ResolvedScanTarget {
   owner: string;

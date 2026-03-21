@@ -70,14 +70,15 @@ export async function resolveScanTarget(
 export async function syncRepositoryClone(
   git: ReturnType<typeof simpleGit>,
   target: Pick<ResolvedScanTarget, 'owner' | 'name' | 'repoPath' | 'localPath' | 'cloneUrl'>,
-): Promise<void> {
+): Promise<'cloned' | 'fetched'> {
   if (await hasClonedRepo(target.repoPath)) {
     const gitRepo = simpleGit(target.repoPath);
     await gitRepo.fetch();
-    return;
+    return 'fetched';
   }
 
   await git.clone(target.cloneUrl ?? resolveCloneUrl(target.owner, target.name), target.repoPath);
+  return 'cloned';
 }
 
 async function hasClonedRepo(repoPath: string): Promise<boolean> {

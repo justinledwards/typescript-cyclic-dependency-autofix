@@ -12,7 +12,9 @@ import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
 import { createProgram } from './index.js';
+import { getOperationalMetrics } from './metrics.js';
 import { profileRepository } from './repoProfile.js';
+import { scanAllTrackedRepositories } from './scanAll.js';
 import { scanRepository } from './scanner.js';
 import { formatSmokeSuiteResult, loadSmokeFixtures, runSmokeSuite } from './smoke.js';
 
@@ -332,6 +334,81 @@ vi.mock('./exportPatches.js', () => ({
   }),
 }));
 
+vi.mock('./metrics.js', () => ({
+  getOperationalMetrics: vi.fn().mockReturnValue({
+    repositories: {
+      total: 2,
+      byStatus: {
+        analyzed: 1,
+        clone_failed: 1,
+      },
+    },
+    scans: {
+      total: 2,
+      completed: 1,
+      failed: 1,
+      byStatus: {
+        completed: 1,
+        failed: 1,
+      },
+    },
+    cycles: {
+      total: 4,
+    },
+    fixCandidates: {
+      total: 3,
+      highConfidence: 2,
+      byClassification: {
+        autofix_import_type: 2,
+        unsupported: 1,
+      },
+    },
+    patches: {
+      total: 2,
+      passed: 1,
+      failed: 1,
+      pending: 0,
+      validationPassRate: 0.5,
+    },
+    reviews: {
+      total: 2,
+      approved: 1,
+      prCandidate: 0,
+      rejected: 1,
+      ignored: 0,
+      approvalRate: 0.5,
+    },
+  }),
+}));
+
+vi.mock('./scanAll.js', () => ({
+  scanAllTrackedRepositories: vi.fn().mockResolvedValue({
+    repositoryCount: 2,
+    completed: 2,
+    failed: 0,
+    scanConcurrency: 2,
+    validationConcurrency: 1,
+    results: [
+      {
+        repositoryId: 1,
+        repository: 'acme/widget',
+        status: 'completed',
+        target: 'acme/widget',
+        scanId: 11,
+        cyclesFound: 2,
+      },
+      {
+        repositoryId: 2,
+        repository: 'acme/gadget',
+        status: 'completed',
+        target: path.join(fixtureRoot, 'gadget'),
+        scanId: 12,
+        cyclesFound: 1,
+      },
+    ],
+  }),
+}));
+
 vi.mock('./createPullRequest.js', () => ({
   createPullRequestForPatch: vi.fn().mockResolvedValue({
     patchId: 12,
@@ -597,14 +674,53 @@ describe('CLI', () => {
     consoleSpy.mockRestore();
   });
 
-  it('scan:all command logs scanning message', () => {
+  it('scan:all command prints the batch scan summary as JSON', async () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const program = createProgram();
     program.exitOverride();
 
-    program.parse(['scan:all'], { from: 'user' });
+    await program.parseAsync([
+      'node',
+      'test',
+      'scan:all',
+      '--worktrees-dir',
+      path.join(fixtureRoot, 'scan-worktrees'),
+      '--concurrency',
+      '3',
+      '--validation-concurrency',
+      '2',
+    ]);
 
-    expect(consoleSpy).toHaveBeenCalledWith('Scanning all tracked repositories...');
+    expect(vi.mocked(scanAllTrackedRepositories)).toHaveBeenCalledWith({
+      worktreesDir: path.join(fixtureRoot, 'scan-worktrees'),
+      scanConcurrency: 3,
+      validationConcurrency: 2,
+      logger: expect.any(Object),
+    });
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      repositoryCount: 2,
+      completed: 2,
+      failed: 0,
+    });
+    consoleSpy.mockRestore();
+  });
+
+  it('metrics:report command prints aggregated metrics as JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'metrics:report']);
+
+    expect(vi.mocked(getOperationalMetrics)).toHaveBeenCalledWith();
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      repositories: {
+        total: 2,
+      },
+      patches: {
+        validationPassRate: 0.5,
+      },
+    });
     consoleSpy.mockRestore();
   });
 
@@ -845,7 +961,7 @@ describe('CLI', () => {
     exitSpy.mockRestore();
   });
 
-  it('has all twelve subcommands registered', () => {
+  it('has all fourteen subcommands registered', () => {
     const program = createProgram();
     const commandNames = program.commands.map((cmd) => cmd.name());
     expect(commandNames).toContain('smoke');
@@ -854,9 +970,11 @@ describe('CLI', () => {
     expect(commandNames).toContain('benchmark:acceptance:annotate');
     expect(commandNames).toContain('scan');
     expect(commandNames).toContain('explain');
+    expect(commandNames).toContain('profile:repo');
     expect(commandNames).toContain('mine:corpus');
     expect(commandNames).toContain('mine:repo-history');
     expect(commandNames).toContain('scan:all');
+    expect(commandNames).toContain('metrics:report');
     expect(commandNames).toContain('retry:failed');
     expect(commandNames).toContain('create:pr');
     expect(commandNames).toContain('export:patches');

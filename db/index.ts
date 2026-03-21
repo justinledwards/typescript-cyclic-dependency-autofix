@@ -119,9 +119,12 @@ export interface AcceptanceBenchmarkCaseDTO {
 
 export type RepositoryStatus =
   | 'queued'
+  | 'downloading'
   | 'scanning'
   | 'analyzed'
+  | 'analysis_failed'
   | 'patched'
+  | 'clone_failed'
   | 'validation_failed'
   | 'ready_for_review'
   | 'ignored';

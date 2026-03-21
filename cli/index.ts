@@ -9,7 +9,15 @@ import { mineBenchmarkCasesFromCorpus } from './benchmarkCorpus.js';
 import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
+import { getOperationalMetrics } from './metrics.js';
+import {
+  createConcurrencyLimiter,
+  createStructuredLogger,
+  resolveConcurrencySetting,
+  type StructuredLogger,
+} from './observability.js';
 import { profileRepository } from './repoProfile.js';
+import { scanAllTrackedRepositories } from './scanAll.js';
 import { scanRepository } from './scanner.js';
 import { formatSmokeSuiteResult, loadSmokeFixtures, runSmokeSuite } from './smoke.js';
 
@@ -21,10 +29,17 @@ export function createProgram(): Command {
   program
     .command('scan <repo>')
     .description('Run the dependency analyzer and classifier on a target repository')
-    .action(async (repo: string) => {
+    .option('--worktrees-dir <path>', 'Directory to use for scan worktrees')
+    .option('--validation-concurrency <count>', 'Maximum concurrent validation jobs', parseInteger)
+    .action(async (repo: string, options: { worktreesDir?: string; validationConcurrency?: number }) => {
       console.log(`Scanning repository: ${repo}`);
       try {
-        const result = await scanRepository(repo);
+        const result = await scanRepository(repo, options.worktreesDir, {
+          logger: createCliLogger(),
+          validationLimiter: createConcurrencyLimiter(
+            resolveConcurrencySetting(options.validationConcurrency, 'AUTOFIX_VALIDATION_CONCURRENCY', 1),
+          ),
+        });
         console.log(`Scan completed successfully (Scan ID: ${result.scanId}). Found ${result.cyclesFound} cycles.`);
       } catch (error) {
         console.error(`Failed to scan repository ${repo}:`, error);
@@ -257,8 +272,37 @@ export function createProgram(): Command {
   program
     .command('scan:all')
     .description('Scan all tracked repositories in the database')
+    .option('--worktrees-dir <path>', 'Directory to use for scan worktrees')
+    .option('--concurrency <count>', 'Maximum concurrent repository scans', parseInteger)
+    .option('--validation-concurrency <count>', 'Maximum concurrent validation jobs', parseInteger)
+    .action(async (options: { worktreesDir?: string; concurrency?: number; validationConcurrency?: number }) => {
+      try {
+        const result = await scanAllTrackedRepositories({
+          worktreesDir: options.worktreesDir,
+          scanConcurrency: options.concurrency,
+          validationConcurrency: options.validationConcurrency,
+          logger: createCliLogger(),
+        });
+        console.log(JSON.stringify(result, null, 2));
+
+        if (result.failed > 0) {
+          process.exit(1);
+        }
+      } catch (error) {
+        console.error('Failed to scan tracked repositories:', error);
+        process.exit(1);
+      }
+    });
+  program
+    .command('metrics:report')
+    .description('Print aggregated operational scan and review metrics')
     .action(() => {
-      console.log('Scanning all tracked repositories...');
+      try {
+        console.log(JSON.stringify(getOperationalMetrics(), null, 2));
+      } catch (error) {
+        console.error('Failed to load operational metrics:', error);
+        process.exit(1);
+      }
     });
 
   program
@@ -326,7 +370,7 @@ export function createProgram(): Command {
     .argument('[outputDir]', 'Directory to write exported patch files to')
     .description('Export approved or PR-candidate patch files for PR generation')
     .action(async (outputDir?: string) => {
-      const result = await exportApprovedPatches(outputDir);
+      const result = await exportApprovedPatches(outputDir, undefined, createCliLogger());
       console.log(`Exported ${result.exportedCount} patch file(s) to ${result.outputDir}`);
     });
 
@@ -353,6 +397,12 @@ function parseScore(value: string): number {
 
 function collectString(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+function createCliLogger(): StructuredLogger {
+  return createStructuredLogger((line) => {
+    console.error(line);
+  });
 }
 
 function parseAcceptanceDecision(value: string): 'accepted' | 'needs_review' | 'rejected' {

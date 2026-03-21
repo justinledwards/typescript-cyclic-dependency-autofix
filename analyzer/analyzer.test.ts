@@ -124,7 +124,7 @@ describe('analyzeRepository', () => {
 
     const result = await analyzeRepository('/some/path');
     expect(result).toHaveLength(1);
-    expect(result[0].path).toEqual(['src/x.ts', 'src/y.ts']);
+    expect(result[0].path).toEqual(['src/x.ts', 'src/y.ts', 'src/x.ts']);
   });
 
   it('ignores non-circular violation rules', async () => {

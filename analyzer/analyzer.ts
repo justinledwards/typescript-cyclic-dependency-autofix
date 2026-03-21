@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { cruise } from 'dependency-cruiser';
+import { canonicalizeCyclePath } from './cycleNormalization.js';
 import { type SemanticAnalysisResult, SemanticAnalyzer } from './semantic.js';
 
 export interface CircularDependency {
@@ -57,10 +58,12 @@ export async function analyzeRepository(repoPath: string): Promise<CircularDepen
             );
           }
 
+          const canonicalCyclePath = canonicalizeCyclePath(cyclePath);
+
           circularDependencies.push({
             type: 'circular',
-            path: cyclePath,
-            analysis: semanticAnalyzer.analyzeCycle(cyclePath),
+            path: canonicalCyclePath,
+            analysis: semanticAnalyzer.analyzeCycle(canonicalCyclePath),
           });
         }
       }

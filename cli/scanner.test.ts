@@ -93,6 +93,36 @@ describe('Scanner Worker', () => {
     expect(cycles[0].normalized_path).toBe('a.ts -> b.ts -> a.ts');
   });
 
+  it('stores rotated cycles under a canonical normalized path', async () => {
+    vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(analyzeRepository).mockResolvedValue([{ type: 'circular', path: ['b.ts', 'a.ts', 'b.ts'] }]);
+
+    const result = await scanRepository('justin/repo');
+    const cycles = dbModule.getCyclesByScanId.all(result.scanId) as {
+      normalized_path: string;
+      participating_files: string;
+    }[];
+
+    expect(cycles).toHaveLength(1);
+    expect(cycles[0].normalized_path).toBe('a.ts -> b.ts -> a.ts');
+    expect(JSON.parse(cycles[0].participating_files)).toEqual(['a.ts', 'b.ts', 'a.ts']);
+  });
+
+  it('deduplicates equivalent rotated cycles within the same scan', async () => {
+    vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
+    vi.mocked(analyzeRepository).mockResolvedValue([
+      { type: 'circular', path: ['a.ts', 'b.ts', 'c.ts', 'a.ts'] },
+      { type: 'circular', path: ['b.ts', 'c.ts', 'a.ts', 'b.ts'] },
+    ]);
+
+    const result = await scanRepository('justin/repo');
+    const cycles = dbModule.getCyclesByScanId.all(result.scanId) as { normalized_path: string }[];
+
+    expect(result.cyclesFound).toBe(1);
+    expect(cycles).toHaveLength(1);
+    expect(cycles[0].normalized_path).toBe('a.ts -> b.ts -> c.ts -> a.ts');
+  });
+
   it('does not construct a repo git client before the clone target exists', async () => {
     vi.mocked(fs.stat).mockRejectedValue(new Error('ENOENT'));
 

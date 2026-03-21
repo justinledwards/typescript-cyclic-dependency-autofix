@@ -1,8 +1,12 @@
+import path from 'node:path';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabase, createStatements, initSchema } from '../db/index.js';
 import { buildApp } from './server.js';
+
+const fixtureRoot = path.join(process.cwd(), '.test-fixtures');
+const replayDetailPath = path.join(fixtureRoot, 'replay-detail');
 
 describe('backend API', () => {
   let app: FastifyInstance;
@@ -448,7 +452,7 @@ describe('backend API', () => {
         owner: 'replay-detail',
         name: 'repo',
         default_branch: 'main',
-        local_path: '/tmp/replay-detail',
+        local_path: replayDetailPath,
       });
       const scanInfo = stmts.addScan.run({
         repository_id: repoInfo.lastInsertRowid,
@@ -477,17 +481,17 @@ describe('backend API', () => {
       stmts.addPatchReplay.run({
         patch_id: patchInfo.lastInsertRowid,
         scan_id: scanInfo.lastInsertRowid,
-        source_target: '/tmp/replay-detail',
+        source_target: replayDetailPath,
         commit_sha: 'replay1',
         replay_bundle: JSON.stringify({
           scan_id: scanInfo.lastInsertRowid,
-          source_target: '/tmp/replay-detail',
+          source_target: replayDetailPath,
           commit_sha: 'replay1',
           repository: {
             owner: 'replay-detail',
             name: 'repo',
             default_branch: 'main',
-            local_path: '/tmp/replay-detail',
+            local_path: replayDetailPath,
           },
           cycle: {
             path: ['x.ts', 'y.ts'],
@@ -520,7 +524,7 @@ describe('backend API', () => {
       });
       expect(response.statusCode).toBe(200);
       const detail = response.json();
-      expect(detail.replay.source_target).toBe('/tmp/replay-detail');
+      expect(detail.replay.source_target).toBe(replayDetailPath);
       expect(detail.replay.commit_sha).toBe('replay1');
       expect(detail.replay.validation.summary).toBe('clean');
       expect(detail.replay.file_snapshots).toHaveLength(1);

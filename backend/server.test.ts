@@ -250,6 +250,56 @@ describe('backend API', () => {
       expect(findings[0].cycle_path).toEqual(['a.ts', 'b.ts']);
     });
 
+    it('GET /api/repositories/:id/findings only returns the primary ranked candidate', async () => {
+      const stmts = createStatements(testDb);
+      const repoInfo = stmts.addRepository.run({
+        owner: 'ranked-findings',
+        name: 'repo',
+        default_branch: null,
+        local_path: null,
+      });
+      const scanInfo = stmts.addScan.run({
+        repository_id: repoInfo.lastInsertRowid,
+        commit_sha: 'ranked1',
+        status: 'completed',
+      });
+      const cycleInfo = stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        participating_files: JSON.stringify(['a.ts', 'b.ts', 'a.ts']),
+        raw_payload: null,
+      });
+      stmts.addFixCandidate.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        strategy: 'extract_shared',
+        planner_rank: 2,
+        classification: 'autofix_extract_shared',
+        confidence: 0.82,
+        reasons: JSON.stringify(['secondary']),
+      });
+      stmts.addFixCandidate.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        strategy: 'import_type',
+        planner_rank: 1,
+        classification: 'autofix_import_type',
+        confidence: 0.94,
+        reasons: JSON.stringify(['primary']),
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/repositories/${repoInfo.lastInsertRowid}/findings`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual([
+        expect.objectContaining({
+          classification: 'autofix_import_type',
+          confidence: 0.94,
+        }),
+      ]);
+    });
+
     it('GET /api/findings filters by repository, classification, validation, review, cycle size, and search', async () => {
       const stmts = createStatements(testDb);
       const repoInfo = stmts.addRepository.run({
@@ -444,6 +494,109 @@ describe('backend API', () => {
       expect(detail.patch).toContain('--- a/p.ts');
       expect(detail.patch_id).toBeDefined();
       expect(detail.review_status).toBe('approved');
+      expect(detail.candidates).toHaveLength(1);
+    });
+
+    it('GET /api/repositories/:id/cycles/:cycleId returns ranked candidate alternatives', async () => {
+      const stmts = createStatements(testDb);
+      const repoInfo = stmts.addRepository.run({
+        owner: 'candidate-detail',
+        name: 'repo',
+        default_branch: null,
+        local_path: null,
+      });
+      const scanInfo = stmts.addScan.run({
+        repository_id: repoInfo.lastInsertRowid,
+        commit_sha: 'candidate1',
+        status: 'completed',
+      });
+      const cycleInfo = stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        participating_files: JSON.stringify(['a.ts', 'b.ts', 'a.ts']),
+        raw_payload: JSON.stringify({
+          analysis: {
+            planner: {
+              selectionSummary: 'Selected import_type after ranking two candidates.',
+            },
+          },
+        }),
+      });
+      const primaryCandidate = stmts.addFixCandidate.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        strategy: 'import_type',
+        planner_rank: 1,
+        classification: 'autofix_import_type',
+        confidence: 0.93,
+        upstreamability_score: 0.96,
+        reasons: JSON.stringify(['primary']),
+        summary: 'Most upstreamable option.',
+        score_breakdown: JSON.stringify(['base 0.97']),
+        signals: JSON.stringify({ introducesNewFile: false }),
+      });
+      const secondaryCandidate = stmts.addFixCandidate.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        strategy: 'extract_shared',
+        planner_rank: 2,
+        classification: 'autofix_extract_shared',
+        confidence: 0.81,
+        upstreamability_score: 0.76,
+        reasons: JSON.stringify(['secondary']),
+        summary: 'Fallback shared extraction.',
+        score_breakdown: JSON.stringify(['base 0.68']),
+        signals: JSON.stringify({ introducesNewFile: true }),
+      });
+      const secondaryPatch = stmts.addPatch.run({
+        fix_candidate_id: secondaryCandidate.lastInsertRowid,
+        patch_text: '--- a/a.ts\n+++ b/a.ts',
+        touched_files: JSON.stringify(['a.ts', 'helper.shared.ts']),
+        validation_status: 'failed',
+        validation_summary: 'Introduced a new cycle.',
+      });
+      stmts.addReviewDecision.run({
+        patch_id: secondaryPatch.lastInsertRowid,
+        decision: 'rejected',
+        notes: 'Too invasive',
+      });
+      const primaryPatch = stmts.addPatch.run({
+        fix_candidate_id: primaryCandidate.lastInsertRowid,
+        patch_text: '--- a/a.ts\n+++ b/a.ts',
+        touched_files: JSON.stringify(['a.ts']),
+        validation_status: 'passed',
+        validation_summary: 'Validation passed.',
+      });
+      stmts.addReviewDecision.run({
+        patch_id: primaryPatch.lastInsertRowid,
+        decision: 'approved',
+        notes: 'Ship it',
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/repositories/${repoInfo.lastInsertRowid}/cycles/${cycleInfo.lastInsertRowid}`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const detail = response.json();
+      expect(detail.classification).toBe('autofix_import_type');
+      expect(detail.candidates).toHaveLength(2);
+      expect(detail.candidates.map((candidate: { planner_rank: number }) => candidate.planner_rank)).toEqual([1, 2]);
+      expect(detail.candidates[0]).toEqual(
+        expect.objectContaining({
+          classification: 'autofix_import_type',
+          upstreamability_score: 0.96,
+          patch_id: primaryPatch.lastInsertRowid,
+          review_status: 'approved',
+        }),
+      );
+      expect(detail.candidates[1]).toEqual(
+        expect.objectContaining({
+          classification: 'autofix_extract_shared',
+          patch_id: secondaryPatch.lastInsertRowid,
+          validation_status: 'failed',
+          review_status: 'rejected',
+        }),
+      );
     });
 
     it('GET /api/repositories/:id/cycles/:cycleId returns replay provenance when available', async () => {

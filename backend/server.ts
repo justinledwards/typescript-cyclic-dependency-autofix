@@ -4,15 +4,11 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import {
   type CycleDTO,
   createStatements,
-  type FixCandidateDTO,
   getDb,
   initSchema,
-  type PatchDTO,
-  type PatchReplayDTO,
   type RepositoryDTO,
   type RepositoryStatus,
   type ReviewDecision,
-  type ReviewDecisionDTO,
 } from '../db/index.js';
 
 interface FindingsFilters {
@@ -47,6 +43,31 @@ interface FindingsQueryRow {
   cycle_size: number;
 }
 
+interface CycleDetailCandidateRow {
+  id: number;
+  cycle_id: number;
+  strategy: string | null;
+  planner_rank: number;
+  classification: string;
+  confidence: number;
+  upstreamability_score: number | null;
+  reasons: string | null;
+  summary: string | null;
+  score_breakdown: string | null;
+  signals: string | null;
+  patch_id: number | null;
+  patch_text: string | null;
+  touched_files: string | null;
+  validation_status: string | null;
+  validation_summary: string | null;
+  replay_bundle: string | null;
+  replay_scan_id: number | null;
+  replay_source_target: string | null;
+  replay_commit_sha: string | null;
+  review_status: string | null;
+  review_notes: string | null;
+}
+
 function parseJsonArray(value: string | null): string[] {
   if (!value) {
     return [];
@@ -78,6 +99,40 @@ function parseReplayBundle(value: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function parseFixCandidate(row: CycleDetailCandidateRow) {
+  const replay = row.replay_bundle ? parseReplayBundle(row.replay_bundle) : null;
+
+  return {
+    id: row.id,
+    cycle_id: row.cycle_id,
+    strategy: row.strategy,
+    planner_rank: row.planner_rank,
+    classification: row.classification,
+    confidence: row.confidence,
+    upstreamability_score: row.upstreamability_score,
+    reasons: parseJsonValue(row.reasons, null as string[] | null),
+    summary: row.summary,
+    score_breakdown: parseJsonValue(row.score_breakdown, [] as string[]) ?? [],
+    signals: parseJsonValue(row.signals, {} as Record<string, unknown>) ?? {},
+    patch_id: row.patch_id,
+    patch: row.patch_text,
+    touched_files: parseJsonArray(row.touched_files),
+    validation_status: row.validation_status ?? 'pending',
+    validation_summary: row.validation_summary,
+    replay: replay
+      ? {
+          patch_id: row.patch_id,
+          scan_id: row.replay_scan_id,
+          source_target: row.replay_source_target,
+          commit_sha: row.replay_commit_sha,
+          ...replay,
+        }
+      : null,
+    review_status: row.review_status ?? 'pending',
+    review_notes: row.review_notes ?? null,
+  };
 }
 
 function toOptionalNumber(value: string | undefined): number | undefined {
@@ -119,8 +174,20 @@ function buildFindingsQuery(filters: FindingsFilters): { query: string; params: 
     FROM cycles c
     INNER JOIN scans s ON s.id = c.scan_id
     INNER JOIN repositories r ON r.id = s.repository_id
-    LEFT JOIN fix_candidates fc ON fc.cycle_id = c.id
-    LEFT JOIN patches p ON p.fix_candidate_id = fc.id
+    LEFT JOIN fix_candidates fc ON fc.id = (
+      SELECT id
+      FROM fix_candidates
+      WHERE cycle_id = c.id
+      ORDER BY planner_rank ASC, id ASC
+      LIMIT 1
+    )
+    LEFT JOIN patches p ON p.id = (
+      SELECT id
+      FROM patches
+      WHERE fix_candidate_id = fc.id
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    )
     LEFT JOIN review_decisions rd ON rd.id = (
       SELECT id
       FROM review_decisions
@@ -414,51 +481,62 @@ export async function buildApp(database?: DatabaseType): Promise<FastifyInstance
       return { error: 'Cycle not found' };
     }
 
-    const fixCandidate = db.prepare('SELECT * FROM fix_candidates WHERE cycle_id = ? LIMIT 1').get(cycleId) as
-      | FixCandidateDTO
-      | undefined;
+    const candidateRows = db
+      .prepare(
+        `
+          SELECT
+            fc.*,
+            p.id AS patch_id,
+            p.patch_text,
+            p.touched_files,
+            p.validation_status,
+            p.validation_summary,
+            pr.replay_bundle,
+            pr.scan_id AS replay_scan_id,
+            pr.source_target AS replay_source_target,
+            pr.commit_sha AS replay_commit_sha,
+            rd.decision AS review_status,
+            rd.notes AS review_notes
+          FROM fix_candidates fc
+          LEFT JOIN patches p ON p.id = (
+            SELECT id
+            FROM patches
+            WHERE fix_candidate_id = fc.id
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+          )
+          LEFT JOIN patch_replays pr ON pr.patch_id = p.id
+          LEFT JOIN review_decisions rd ON rd.id = (
+            SELECT id
+            FROM review_decisions
+            WHERE patch_id = p.id
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+          )
+          WHERE fc.cycle_id = ?
+          ORDER BY fc.planner_rank ASC, fc.id ASC
+        `,
+      )
+      .all(cycleId) as CycleDetailCandidateRow[];
 
-    let patch: PatchDTO | undefined;
-    let patchReplay: PatchReplayDTO | undefined;
-    let reviewDecision: ReviewDecisionDTO | undefined;
-
-    if (fixCandidate) {
-      patch = db.prepare('SELECT * FROM patches WHERE fix_candidate_id = ? LIMIT 1').get(fixCandidate.id) as
-        | PatchDTO
-        | undefined;
-
-      if (patch) {
-        patchReplay = db.prepare('SELECT * FROM patch_replays WHERE patch_id = ? LIMIT 1').get(patch.id) as
-          | PatchReplayDTO
-          | undefined;
-        reviewDecision = stmts.getReviewDecisionByPatchId.get(patch.id) as ReviewDecisionDTO | undefined;
-      }
-    }
-
-    const replay = patchReplay ? parseReplayBundle(patchReplay.replay_bundle) : null;
+    const candidates = candidateRows.map((candidateRow) => parseFixCandidate(candidateRow));
+    const primaryCandidate = candidates[0];
 
     return {
       ...cycle,
-      patch_id: patch?.id ?? null,
       cycle_path: parseJsonArray(cycle.participating_files),
       raw_payload: parseJsonValue(cycle.raw_payload, null),
-      classification: fixCandidate?.classification ?? null,
-      confidence: fixCandidate?.confidence ?? null,
-      reasons: parseJsonValue(fixCandidate?.reasons ?? null, null),
-      patch: patch?.patch_text ?? null,
-      validation_status: patch?.validation_status ?? null,
-      validation_summary: patch?.validation_summary ?? null,
-      replay: replay
-        ? {
-            patch_id: patchReplay?.patch_id ?? null,
-            scan_id: patchReplay?.scan_id ?? null,
-            source_target: patchReplay?.source_target ?? null,
-            commit_sha: patchReplay?.commit_sha ?? null,
-            ...replay,
-          }
-        : null,
-      review_status: reviewDecision?.decision ?? 'pending',
-      review_notes: reviewDecision?.notes ?? null,
+      patch_id: primaryCandidate?.patch_id ?? null,
+      classification: primaryCandidate?.classification ?? null,
+      confidence: primaryCandidate?.confidence ?? null,
+      reasons: primaryCandidate?.reasons ?? null,
+      patch: primaryCandidate?.patch ?? null,
+      validation_status: primaryCandidate?.validation_status ?? 'pending',
+      validation_summary: primaryCandidate?.validation_summary ?? null,
+      replay: primaryCandidate?.replay ?? null,
+      review_status: primaryCandidate?.review_status ?? 'pending',
+      review_notes: primaryCandidate?.review_notes ?? null,
+      candidates,
     };
   });
 

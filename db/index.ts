@@ -38,9 +38,15 @@ export interface CycleDTO {
 export interface FixCandidateDTO {
   id: number;
   cycle_id: number;
+  strategy: string | null;
+  planner_rank: number;
   classification: string;
   confidence: number;
+  upstreamability_score: number | null;
   reasons: string | null;
+  summary: string | null;
+  score_breakdown: string | null;
+  signals: string | null;
   created_at: string;
 }
 
@@ -184,9 +190,15 @@ const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS fix_candidates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     cycle_id INTEGER NOT NULL,
+    strategy TEXT,
+    planner_rank INTEGER NOT NULL DEFAULT 1,
     classification TEXT NOT NULL,
     confidence REAL NOT NULL,
+    upstreamability_score REAL,
     reasons TEXT, -- JSON string
+    summary TEXT,
+    score_breakdown TEXT, -- JSON string
+    signals TEXT, -- JSON string
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (cycle_id) REFERENCES cycles(id)
   );
@@ -308,12 +320,88 @@ export function createDatabase(dbPath?: string): DatabaseType {
  */
 export function initSchema(database: DatabaseType): void {
   database.exec(SCHEMA_SQL);
+  ensureFixCandidateSchema(database);
+}
+
+interface TableColumnInfo {
+  name: string;
+}
+
+function ensureFixCandidateSchema(database: DatabaseType): void {
+  const existingColumns = new Set(
+    (database.prepare('PRAGMA table_info(fix_candidates)').all() as TableColumnInfo[]).map((column) => column.name),
+  );
+
+  const requiredColumns = [
+    ['strategy', 'TEXT'],
+    ['planner_rank', 'INTEGER NOT NULL DEFAULT 1'],
+    ['upstreamability_score', 'REAL'],
+    ['summary', 'TEXT'],
+    ['score_breakdown', 'TEXT'],
+    ['signals', 'TEXT'],
+  ] as const;
+
+  for (const [columnName, columnDefinition] of requiredColumns) {
+    if (existingColumns.has(columnName)) {
+      continue;
+    }
+
+    database.exec(`ALTER TABLE fix_candidates ADD COLUMN ${columnName} ${columnDefinition}`);
+  }
+
+  database.exec(`
+    UPDATE fix_candidates
+    SET planner_rank = COALESCE(planner_rank, 1)
+    WHERE planner_rank IS NULL
+  `);
+  database.exec(`
+    UPDATE fix_candidates
+    SET strategy = CASE classification
+      WHEN 'autofix_import_type' THEN 'import_type'
+      WHEN 'autofix_direct_import' THEN 'direct_import'
+      WHEN 'autofix_extract_shared' THEN 'extract_shared'
+      WHEN 'autofix_host_state_update' THEN 'host_state_update'
+      ELSE strategy
+    END
+    WHERE strategy IS NULL
+  `);
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_fix_candidates_cycle_rank
+    ON fix_candidates(cycle_id, planner_rank, id)
+  `);
 }
 
 /**
  * Create all prepared statements for a given database instance.
  */
 export function createStatements(database: DatabaseType) {
+  const addFixCandidateStatement = database.prepare(`
+    INSERT INTO fix_candidates (
+      cycle_id,
+      strategy,
+      planner_rank,
+      classification,
+      confidence,
+      upstreamability_score,
+      reasons,
+      summary,
+      score_breakdown,
+      signals
+    )
+    VALUES (
+      @cycle_id,
+      @strategy,
+      @planner_rank,
+      @classification,
+      @confidence,
+      @upstreamability_score,
+      @reasons,
+      @summary,
+      @score_breakdown,
+      @signals
+    )
+  `);
+
   return {
     // Repositories
     addRepository: database.prepare(`
@@ -364,12 +452,32 @@ export function createStatements(database: DatabaseType) {
     `),
 
     // Fix Candidates
-    addFixCandidate: database.prepare(`
-      INSERT INTO fix_candidates (cycle_id, classification, confidence, reasons)
-      VALUES (@cycle_id, @classification, @confidence, @reasons)
-    `),
+    addFixCandidate: {
+      run: (params: {
+        cycle_id: number | bigint;
+        strategy?: string | null;
+        planner_rank?: number;
+        classification: string;
+        confidence: number;
+        upstreamability_score?: number | null;
+        reasons?: string | null;
+        summary?: string | null;
+        score_breakdown?: string | null;
+        signals?: string | null;
+      }) =>
+        addFixCandidateStatement.run({
+          strategy: null,
+          planner_rank: 1,
+          upstreamability_score: null,
+          reasons: null,
+          summary: null,
+          score_breakdown: null,
+          signals: null,
+          ...params,
+        }),
+    },
     getFixCandidatesByCycleId: database.prepare(`
-      SELECT * FROM fix_candidates WHERE cycle_id = ?
+      SELECT * FROM fix_candidates WHERE cycle_id = ? ORDER BY planner_rank ASC, id ASC
     `),
 
     // Patches

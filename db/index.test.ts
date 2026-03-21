@@ -119,6 +119,49 @@ describe('db module', () => {
       expect(() => initSchema(db)).not.toThrow();
       expect(() => initSchema(db)).not.toThrow();
     });
+
+    it('adds ranked-candidate columns to legacy fix_candidates tables', () => {
+      const legacyDb = createDatabase(':memory:');
+      legacyDb.exec(`
+        CREATE TABLE fix_candidates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          cycle_id INTEGER NOT NULL,
+          classification TEXT NOT NULL,
+          confidence REAL NOT NULL,
+          reasons TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO fix_candidates (cycle_id, classification, confidence, reasons)
+        VALUES (1, 'autofix_import_type', 0.9, NULL);
+      `);
+
+      initSchema(legacyDb);
+
+      const columns = legacyDb.prepare('PRAGMA table_info(fix_candidates)').all() as Array<{ name: string }>;
+      const candidate = legacyDb
+        .prepare('SELECT strategy, planner_rank, upstreamability_score FROM fix_candidates LIMIT 1')
+        .get() as {
+        strategy: string | null;
+        planner_rank: number;
+        upstreamability_score: number | null;
+      };
+
+      expect(columns.map((column) => column.name)).toEqual(
+        expect.arrayContaining([
+          'strategy',
+          'planner_rank',
+          'upstreamability_score',
+          'summary',
+          'score_breakdown',
+          'signals',
+        ]),
+      );
+      expect(candidate.strategy).toBe('import_type');
+      expect(candidate.planner_rank).toBe(1);
+      expect(candidate.upstreamability_score).toBeNull();
+
+      legacyDb.close();
+    });
   });
 
   describe('repositories', () => {
@@ -355,6 +398,41 @@ describe('db module', () => {
     it('returns empty array when no candidates exist', () => {
       const candidates = stmts.getFixCandidatesByCycleId.all(cycleId);
       expect(candidates).toEqual([]);
+    });
+
+    it('orders ranked candidates by planner rank and persists scoring metadata', () => {
+      stmts.addFixCandidate.run({
+        cycle_id: cycleId,
+        strategy: 'extract_shared',
+        planner_rank: 2,
+        classification: 'autofix_extract_shared',
+        confidence: 0.81,
+        upstreamability_score: 0.74,
+        reasons: JSON.stringify(['extract helper']),
+        summary: 'Introduces a shared helper file.',
+        score_breakdown: JSON.stringify(['base 0.68']),
+        signals: JSON.stringify({ introducesNewFile: true }),
+      });
+      stmts.addFixCandidate.run({
+        cycle_id: cycleId,
+        strategy: 'import_type',
+        planner_rank: 1,
+        classification: 'autofix_import_type',
+        confidence: 0.94,
+        upstreamability_score: 0.95,
+        reasons: JSON.stringify(['type-only edge']),
+        summary: 'Converts runtime imports to import type.',
+        score_breakdown: JSON.stringify(['base 0.97']),
+        signals: JSON.stringify({ introducesNewFile: false }),
+      });
+
+      const candidates = stmts.getFixCandidatesByCycleId.all(cycleId) as FixCandidateDTO[];
+
+      expect(candidates).toHaveLength(2);
+      expect(candidates.map((candidate) => candidate.planner_rank)).toEqual([1, 2]);
+      expect(candidates[0].strategy).toBe('import_type');
+      expect(candidates[0].upstreamability_score).toBe(0.95);
+      expect(candidates[0].summary).toContain('import type');
     });
   });
 

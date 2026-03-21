@@ -1,6 +1,7 @@
 import type { Database as DatabaseType } from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  type AcceptanceBenchmarkCaseDTO,
   type BenchmarkCaseDTO,
   type CycleDTO,
   createDatabase,
@@ -13,6 +14,9 @@ import {
   addRepository as defaultAddRepository,
   addReviewDecision as defaultAddReviewDecision,
   addScan as defaultAddScan,
+  getAcceptanceBenchmarkCaseById as defaultGetAcceptanceBenchmarkCaseById,
+  getAcceptanceBenchmarkCases as defaultGetAcceptanceBenchmarkCases,
+  getAcceptanceSummaryByClassification as defaultGetAcceptanceSummaryByClassification,
   getAllRepositories as defaultGetAllRepositories,
   getBenchmarkCases as defaultGetBenchmarkCases,
   getBenchmarkCasesByRepository as defaultGetBenchmarkCasesByRepository,
@@ -25,8 +29,10 @@ import {
   getRepositoryByOwnerName as defaultGetRepositoryByOwnerName,
   getReviewDecisionByPatchId as defaultGetReviewDecisionByPatchId,
   getScan as defaultGetScan,
+  updateAcceptanceBenchmarkReview as defaultUpdateAcceptanceBenchmarkReview,
   updateRepositoryStatus as defaultUpdateRepositoryStatus,
   updateScanStatus as defaultUpdateScanStatus,
+  upsertAcceptanceBenchmarkCase as defaultUpsertAcceptanceBenchmarkCase,
   type FixCandidateDTO,
   // Default production exports
   getDb as getDefaultDb,
@@ -38,6 +44,9 @@ import {
   type ReviewDecisionDTO,
   type ScanDTO,
 } from './index.js';
+
+// eslint-disable-next-line sonarjs/publicly-writable-directories
+const TEST_LOCAL_REPO_PATH = '/tmp/openclaw';
 
 describe('db module', () => {
   let db: DatabaseType;
@@ -77,6 +86,7 @@ describe('db module', () => {
       expect(tableNames).toContain('patch_replays');
       expect(tableNames).toContain('benchmark_cases');
       expect(tableNames).toContain('review_decisions');
+      expect(tableNames).toContain('acceptance_benchmark_cases');
     });
 
     it('creates expected indexes', () => {
@@ -100,6 +110,9 @@ describe('db module', () => {
       expect(indexNames).toContain('idx_benchmark_cases_source');
       expect(indexNames).toContain('idx_review_decisions_patch_id');
       expect(indexNames).toContain('idx_review_decisions_decision');
+      expect(indexNames).toContain('idx_acceptance_benchmark_repository');
+      expect(indexNames).toContain('idx_acceptance_benchmark_classification');
+      expect(indexNames).toContain('idx_acceptance_benchmark_acceptability');
     });
 
     it('is idempotent (safe to call multiple times)', () => {
@@ -668,6 +681,236 @@ describe('db module', () => {
       expect(decision).toBeUndefined();
     });
   });
+
+  describe('acceptance_benchmark_cases', () => {
+    it('upserts and retrieves acceptance benchmark cases', () => {
+      const insert = stmts.upsertAcceptanceBenchmarkCase.run({
+        repository: 'openclaw/openclaw',
+        local_path: TEST_LOCAL_REPO_PATH,
+        commit_sha: 'abc123',
+        scan_id: 1,
+        cycle_id: 2,
+        fix_candidate_id: 3,
+        patch_id: 4,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        classification: 'autofix_import_type',
+        confidence: 0.91,
+        upstreamability_score: 0.88,
+        validation_status: 'passed',
+        validation_summary: 'Cycle removed',
+        review_status: 'approved',
+        touched_files: '["a.ts","b.ts"]',
+        feature_vector: '{"cycleSize":2}',
+        planner_summary: 'Selected import_type',
+        planner_attempts: '[{"strategy":"import_type"}]',
+        acceptability: 'accepted',
+        rejection_reason: null,
+        acceptability_note: null,
+      });
+
+      const acceptanceCase = stmts.getAcceptanceBenchmarkCaseById.get(
+        insert.lastInsertRowid,
+      ) as AcceptanceBenchmarkCaseDTO;
+      expect(acceptanceCase.repository).toBe('openclaw/openclaw');
+      expect(acceptanceCase.classification).toBe('autofix_import_type');
+      expect(acceptanceCase.acceptability).toBe('accepted');
+      expect(acceptanceCase.feature_vector).toBe('{"cycleSize":2}');
+    });
+
+    it('updates an existing acceptance benchmark case on conflict', () => {
+      stmts.upsertAcceptanceBenchmarkCase.run({
+        repository: 'openclaw/openclaw',
+        local_path: TEST_LOCAL_REPO_PATH,
+        commit_sha: 'abc123',
+        scan_id: 1,
+        cycle_id: 2,
+        fix_candidate_id: 3,
+        patch_id: 4,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        classification: 'autofix_import_type',
+        confidence: 0.91,
+        upstreamability_score: 0.88,
+        validation_status: 'passed',
+        validation_summary: 'Cycle removed',
+        review_status: 'approved',
+        touched_files: '["a.ts","b.ts"]',
+        feature_vector: '{"cycleSize":2}',
+        planner_summary: 'Selected import_type',
+        planner_attempts: '[{"strategy":"import_type"}]',
+        acceptability: 'accepted',
+        rejection_reason: null,
+        acceptability_note: null,
+      });
+
+      stmts.upsertAcceptanceBenchmarkCase.run({
+        repository: 'openclaw/openclaw',
+        local_path: TEST_LOCAL_REPO_PATH,
+        commit_sha: 'abc123',
+        scan_id: 11,
+        cycle_id: 12,
+        fix_candidate_id: 13,
+        patch_id: 14,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        classification: 'autofix_import_type',
+        confidence: 0.72,
+        upstreamability_score: 0.64,
+        validation_status: 'failed',
+        validation_summary: 'Typecheck failed',
+        review_status: 'rejected',
+        touched_files: '["a.ts"]',
+        feature_vector: '{"cycleSize":2,"barrel":true}',
+        planner_summary: 'Selected import_type after review',
+        planner_attempts: '[{"strategy":"import_type","status":"candidate"}]',
+        acceptability: 'rejected',
+        rejection_reason: 'semantic_wrong',
+        acceptability_note: 'Rejected during benchmark review',
+      });
+
+      const rows = stmts.getAcceptanceBenchmarkCases.all() as AcceptanceBenchmarkCaseDTO[];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        scan_id: 11,
+        cycle_id: 12,
+        fix_candidate_id: 13,
+        patch_id: 14,
+        confidence: 0.72,
+        upstreamability_score: 0.64,
+        validation_status: 'failed',
+        review_status: 'rejected',
+        acceptability: 'rejected',
+        rejection_reason: 'semantic_wrong',
+        acceptability_note: 'Rejected during benchmark review',
+      });
+    });
+
+    it('summarizes acceptance benchmark cases by classification', () => {
+      stmts.upsertAcceptanceBenchmarkCase.run({
+        repository: 'openclaw/openclaw',
+        local_path: TEST_LOCAL_REPO_PATH,
+        commit_sha: 'abc123',
+        scan_id: 1,
+        cycle_id: 2,
+        fix_candidate_id: 3,
+        patch_id: 4,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        classification: 'autofix_import_type',
+        confidence: 0.91,
+        upstreamability_score: 0.88,
+        validation_status: 'passed',
+        validation_summary: 'Cycle removed',
+        review_status: 'approved',
+        touched_files: '["a.ts","b.ts"]',
+        feature_vector: '{"cycleSize":2}',
+        planner_summary: 'Selected import_type',
+        planner_attempts: '[{"strategy":"import_type"}]',
+        acceptability: 'accepted',
+        rejection_reason: null,
+        acceptability_note: null,
+      });
+      stmts.upsertAcceptanceBenchmarkCase.run({
+        repository: 'openclaw/openclaw',
+        local_path: TEST_LOCAL_REPO_PATH,
+        commit_sha: 'def456',
+        scan_id: 5,
+        cycle_id: 6,
+        fix_candidate_id: 7,
+        patch_id: 8,
+        normalized_path: 'c.ts -> d.ts -> c.ts',
+        classification: 'autofix_import_type',
+        confidence: 0.83,
+        upstreamability_score: 0.8,
+        validation_status: 'passed',
+        validation_summary: 'Cycle removed',
+        review_status: 'pending',
+        touched_files: '["c.ts","d.ts"]',
+        feature_vector: '{"cycleSize":2}',
+        planner_summary: 'Selected import_type',
+        planner_attempts: '[{"strategy":"import_type"}]',
+        acceptability: 'needs_review',
+        rejection_reason: null,
+        acceptability_note: null,
+      });
+      stmts.upsertAcceptanceBenchmarkCase.run({
+        repository: 'openclaw/openclaw',
+        local_path: TEST_LOCAL_REPO_PATH,
+        commit_sha: 'ghi789',
+        scan_id: 9,
+        cycle_id: 10,
+        fix_candidate_id: 11,
+        patch_id: 12,
+        normalized_path: 'e.ts -> f.ts -> e.ts',
+        classification: 'autofix_extract_shared',
+        confidence: 0.67,
+        upstreamability_score: 0.6,
+        validation_status: 'failed',
+        validation_summary: 'Typecheck failed',
+        review_status: 'rejected',
+        touched_files: '["e.ts","f.ts","shared.ts"]',
+        feature_vector: '{"cycleSize":2,"introducesNewFile":true}',
+        planner_summary: 'Selected extract_shared',
+        planner_attempts: '[{"strategy":"extract_shared"}]',
+        acceptability: 'rejected',
+        rejection_reason: 'repo_conventions_mismatch',
+        acceptability_note: 'Rejected by benchmark review',
+      });
+
+      const summaryRows = stmts.getAcceptanceSummaryByClassification.all() as Array<Record<string, unknown>>;
+      expect(summaryRows).toEqual([
+        {
+          classification: 'autofix_extract_shared',
+          total_cases: 1,
+          accepted_cases: 0,
+          rejected_cases: 1,
+          needs_review_cases: 0,
+        },
+        {
+          classification: 'autofix_import_type',
+          total_cases: 2,
+          accepted_cases: 1,
+          rejected_cases: 0,
+          needs_review_cases: 1,
+        },
+      ]);
+    });
+
+    it('updates review annotations for an acceptance benchmark case', () => {
+      const insert = stmts.upsertAcceptanceBenchmarkCase.run({
+        repository: 'openclaw/openclaw',
+        local_path: TEST_LOCAL_REPO_PATH,
+        commit_sha: 'abc123',
+        scan_id: 1,
+        cycle_id: 2,
+        fix_candidate_id: 3,
+        patch_id: 4,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        classification: 'autofix_import_type',
+        confidence: 0.91,
+        upstreamability_score: 0.88,
+        validation_status: 'passed',
+        validation_summary: 'Cycle removed',
+        review_status: 'approved',
+        touched_files: '["a.ts","b.ts"]',
+        feature_vector: '{"cycleSize":2}',
+        planner_summary: 'Selected import_type',
+        planner_attempts: '[{"strategy":"import_type"}]',
+        acceptability: 'needs_review',
+        rejection_reason: null,
+        acceptability_note: null,
+      });
+
+      stmts.updateAcceptanceBenchmarkReview.run({
+        id: insert.lastInsertRowid,
+        acceptability: 'rejected',
+        rejection_reason: 'validation_weak',
+        acceptability_note: 'Needs repo-native validation',
+      });
+
+      const updated = stmts.getAcceptanceBenchmarkCaseById.get(insert.lastInsertRowid) as AcceptanceBenchmarkCaseDTO;
+      expect(updated.acceptability).toBe('rejected');
+      expect(updated.rejection_reason).toBe('validation_weak');
+      expect(updated.acceptability_note).toBe('Needs repo-native validation');
+    });
+  });
 });
 
 describe('default production exports', () => {
@@ -706,5 +949,10 @@ describe('default production exports', () => {
     expect(defaultGetBenchmarkCasesByRepository).toBeDefined();
     expect(defaultAddReviewDecision).toBeDefined();
     expect(defaultGetReviewDecisionByPatchId).toBeDefined();
+    expect(defaultUpsertAcceptanceBenchmarkCase).toBeDefined();
+    expect(defaultGetAcceptanceBenchmarkCases).toBeDefined();
+    expect(defaultGetAcceptanceBenchmarkCaseById).toBeDefined();
+    expect(defaultGetAcceptanceSummaryByClassification).toBeDefined();
+    expect(defaultUpdateAcceptanceBenchmarkReview).toBeDefined();
   });
 });

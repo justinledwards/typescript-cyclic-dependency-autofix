@@ -238,6 +238,7 @@ describe('SemanticAnalyzer', () => {
       },
       historicalEvidence: {
         totalBenchmarkCases: 6,
+        totalAcceptanceBenchmarkCases: 2,
         totalReviewedPatches: 4,
         totalValidatedPatches: 4,
         strategies: {
@@ -250,6 +251,19 @@ describe('SemanticAnalyzer', () => {
             ignoredReviews: 0,
             passedValidations: 0,
             failedValidations: 0,
+            acceptedBenchmarks: 0,
+            rejectedBenchmarks: 0,
+            needsReviewBenchmarks: 0,
+            acceptanceProfileMatches: 0,
+            semanticWrongRejections: 0,
+            repoConventionsMismatchRejections: 0,
+            diffNoisyRejections: 0,
+            validationWeakRejections: 0,
+            otherRejections: 0,
+            originalCyclePersistedFailures: 0,
+            newCyclesIntroducedFailures: 0,
+            repoValidationFailures: 0,
+            typecheckFailures: 0,
           },
           direct_import: {
             benchmarkMatches: 4,
@@ -260,6 +274,19 @@ describe('SemanticAnalyzer', () => {
             ignoredReviews: 0,
             passedValidations: 4,
             failedValidations: 0,
+            acceptedBenchmarks: 2,
+            rejectedBenchmarks: 0,
+            needsReviewBenchmarks: 0,
+            acceptanceProfileMatches: 2,
+            semanticWrongRejections: 0,
+            repoConventionsMismatchRejections: 0,
+            diffNoisyRejections: 0,
+            validationWeakRejections: 0,
+            otherRejections: 0,
+            originalCyclePersistedFailures: 0,
+            newCyclesIntroducedFailures: 0,
+            repoValidationFailures: 0,
+            typecheckFailures: 0,
           },
           extract_shared: {
             benchmarkMatches: 0,
@@ -270,6 +297,19 @@ describe('SemanticAnalyzer', () => {
             ignoredReviews: 0,
             passedValidations: 0,
             failedValidations: 0,
+            acceptedBenchmarks: 0,
+            rejectedBenchmarks: 0,
+            needsReviewBenchmarks: 0,
+            acceptanceProfileMatches: 0,
+            semanticWrongRejections: 0,
+            repoConventionsMismatchRejections: 0,
+            diffNoisyRejections: 0,
+            validationWeakRejections: 0,
+            otherRejections: 0,
+            originalCyclePersistedFailures: 0,
+            newCyclesIntroducedFailures: 0,
+            repoValidationFailures: 0,
+            typecheckFailures: 0,
           },
           host_state_update: {
             benchmarkMatches: 0,
@@ -280,6 +320,19 @@ describe('SemanticAnalyzer', () => {
             ignoredReviews: 0,
             passedValidations: 0,
             failedValidations: 0,
+            acceptedBenchmarks: 0,
+            rejectedBenchmarks: 0,
+            needsReviewBenchmarks: 0,
+            acceptanceProfileMatches: 0,
+            semanticWrongRejections: 0,
+            repoConventionsMismatchRejections: 0,
+            diffNoisyRejections: 0,
+            validationWeakRejections: 0,
+            otherRejections: 0,
+            originalCyclePersistedFailures: 0,
+            newCyclesIntroducedFailures: 0,
+            repoValidationFailures: 0,
+            typecheckFailures: 0,
           },
         },
       },
@@ -323,14 +376,117 @@ describe('SemanticAnalyzer', () => {
     expect(result.planner?.rankedCandidates[0]?.signals).toMatchObject({
       historicalBenchmarkMatches: 4,
       historicalProfileMatches: 2,
+      historicalAcceptanceBenchmarks: 2,
       historicalReviewedPatches: 4,
       historicalValidatedPatches: 4,
     });
     expect(result.planner?.rankedCandidates[0]?.scoreBreakdown).toEqual(
       expect.arrayContaining([
         expect.stringContaining('matching benchmark case'),
+        expect.stringContaining('acceptance benchmark outcomes'),
         expect.stringContaining('review outcomes'),
         expect.stringContaining('validation history'),
+      ]),
+    );
+  });
+
+  it('penalizes extract_shared when acceptance and replay evidence show fragile outcomes', () => {
+    analyzer = new SemanticAnalyzer('/dummy/repo', {
+      repositoryProfile: {
+        packageManager: 'pnpm',
+        workspaceMode: 'workspace',
+        validationCommandCount: 5,
+      },
+      historicalEvidence: {
+        totalBenchmarkCases: 0,
+        totalAcceptanceBenchmarkCases: 5,
+        totalReviewedPatches: 2,
+        totalValidatedPatches: 3,
+        strategies: {
+          import_type: {
+            benchmarkMatches: 0,
+            profileMatches: 0,
+            approvedReviews: 0,
+            rejectedReviews: 0,
+            prCandidates: 0,
+            ignoredReviews: 0,
+            passedValidations: 0,
+            failedValidations: 0,
+          },
+          direct_import: {
+            benchmarkMatches: 0,
+            profileMatches: 0,
+            approvedReviews: 0,
+            rejectedReviews: 0,
+            prCandidates: 0,
+            ignoredReviews: 0,
+            passedValidations: 0,
+            failedValidations: 0,
+          },
+          extract_shared: {
+            benchmarkMatches: 0,
+            profileMatches: 0,
+            approvedReviews: 0,
+            rejectedReviews: 2,
+            prCandidates: 0,
+            ignoredReviews: 0,
+            passedValidations: 1,
+            failedValidations: 2,
+            rejectedBenchmarks: 3,
+            acceptedBenchmarks: 0,
+            needsReviewBenchmarks: 0,
+            acceptanceProfileMatches: 2,
+            diffNoisyRejections: 1,
+            repoConventionsMismatchRejections: 1,
+            semanticWrongRejections: 1,
+            validationWeakRejections: 1,
+            newCyclesIntroducedFailures: 1,
+            repoValidationFailures: 1,
+            originalCyclePersistedFailures: 0,
+            typecheckFailures: 0,
+            otherRejections: 0,
+          },
+          host_state_update: {
+            benchmarkMatches: 0,
+            profileMatches: 0,
+            approvedReviews: 0,
+            rejectedReviews: 0,
+            prCandidates: 0,
+            ignoredReviews: 0,
+            passedValidations: 0,
+            failedValidations: 0,
+          },
+        },
+      },
+    });
+
+    analyzer.project.createSourceFile(
+      '/dummy/repo/a.ts',
+      `
+      import { helperB } from './b';
+      export const mainA = () => helperB();
+    `,
+    );
+    analyzer.project.createSourceFile(
+      '/dummy/repo/b.ts',
+      `
+      import { mainA } from './a';
+      export const helperB = () => console.log("B");
+      export const sideEffectB = () => mainA();
+    `,
+    );
+
+    const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'a.ts']);
+
+    expect(result.classification).toBe('autofix_extract_shared');
+    expect(result.upstreamabilityScore).toBeLessThan(0.75);
+    expect(result.planner?.rankedCandidates[0]?.scoreBreakdown).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('acceptance benchmark outcomes'),
+        expect.stringContaining('semantically wrong'),
+        expect.stringContaining('noisy diffs'),
+        expect.stringContaining('preserved or introduced cycles'),
+        expect.stringContaining('repo validation or typecheck failed'),
       ]),
     );
   });

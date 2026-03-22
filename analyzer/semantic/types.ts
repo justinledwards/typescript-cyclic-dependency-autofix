@@ -75,10 +75,24 @@ export interface StrategyHistoricalEvidence {
   ignoredReviews: number;
   passedValidations: number;
   failedValidations: number;
+  acceptedBenchmarks?: number;
+  rejectedBenchmarks?: number;
+  needsReviewBenchmarks?: number;
+  acceptanceProfileMatches?: number;
+  semanticWrongRejections?: number;
+  repoConventionsMismatchRejections?: number;
+  diffNoisyRejections?: number;
+  validationWeakRejections?: number;
+  otherRejections?: number;
+  originalCyclePersistedFailures?: number;
+  newCyclesIntroducedFailures?: number;
+  repoValidationFailures?: number;
+  typecheckFailures?: number;
 }
 
 export interface HistoricalEvidenceSnapshot {
   totalBenchmarkCases: number;
+  totalAcceptanceBenchmarkCases: number;
   totalReviewedPatches: number;
   totalValidatedPatches: number;
   strategies: Record<PlanningStrategy, StrategyHistoricalEvidence>;

@@ -152,67 +152,216 @@ export function applyHistoricalEvidence(
     return attempt;
   }
 
-  let adjustedScore = attempt.score ?? 0;
-  const breakdown = [...(attempt.scoreBreakdown ?? [])];
-
-  if (evidence.benchmarkMatches > 0) {
-    const benchmarkBonus = Math.min(0.03, evidence.benchmarkMatches * 0.005);
-    adjustedScore += benchmarkBonus;
-    breakdown.push(`+${benchmarkBonus.toFixed(2)} from ${evidence.benchmarkMatches} matching benchmark case(s)`);
-  }
-
-  if (evidence.profileMatches > 0) {
-    const profileBonus = Math.min(0.02, evidence.profileMatches * 0.01);
-    adjustedScore += profileBonus;
-    breakdown.push(`+${profileBonus.toFixed(2)} from repository-profile matches in historical cases`);
-  }
-
   const reviewedCount =
     evidence.approvedReviews + evidence.rejectedReviews + evidence.prCandidates + evidence.ignoredReviews;
-  if (reviewedCount > 0) {
-    const positiveReviewWeight = evidence.approvedReviews + evidence.prCandidates * 0.5;
-    const approvalRatio = positiveReviewWeight / reviewedCount;
-    const reviewDelta = clampSignedAdjustment((approvalRatio - 0.5) * 0.08, 0.04);
-    if (reviewDelta !== 0) {
-      adjustedScore += reviewDelta;
-      breakdown.push(`${formatSignedScore(reviewDelta)} from review outcomes (${reviewedCount} reviewed patch(es))`);
-    }
-  }
-
   const validatedCount = evidence.passedValidations + evidence.failedValidations;
-  if (validatedCount > 0) {
-    const validationRatio = evidence.passedValidations / validatedCount;
-    const validationDelta = clampSignedAdjustment((validationRatio - 0.5) * 0.06, 0.03);
-    if (validationDelta !== 0) {
-      adjustedScore += validationDelta;
-      breakdown.push(
-        `${formatSignedScore(validationDelta)} from validation history (${evidence.passedValidations}/${validatedCount} passed)`,
-      );
-    }
-  }
+  const acceptanceReviewedCount = (evidence.acceptedBenchmarks ?? 0) + (evidence.rejectedBenchmarks ?? 0);
+  const semanticWrongPenalty = Math.min(0.05, (evidence.semanticWrongRejections ?? 0) * 0.02);
+  const noisyDiffRejections = (evidence.diffNoisyRejections ?? 0) + (evidence.repoConventionsMismatchRejections ?? 0);
+  const structuralFailureCount =
+    (evidence.originalCyclePersistedFailures ?? 0) + (evidence.newCyclesIntroducedFailures ?? 0);
+  const validationFailureCount = (evidence.repoValidationFailures ?? 0) + (evidence.typecheckFailures ?? 0);
+  const accumulator = {
+    score: attempt.score ?? 0,
+    breakdown: [...(attempt.scoreBreakdown ?? [])],
+  };
 
-  if (attempt.strategy === 'direct_import' && features.hasBarrelFile) {
-    adjustedScore += 0.01;
-    breakdown.push('+0.01 because the cycle already contains a barrel entrypoint');
-  }
-
-  if (attempt.strategy === 'extract_shared' && features.validationCommandCount > 2) {
-    adjustedScore -= 0.01;
-    breakdown.push('-0.01 because new shared modules are more fragile under heavier repo validation');
-  }
+  applyBenchmarkEvidence(accumulator, evidence);
+  applyReviewEvidence(accumulator, evidence, reviewedCount);
+  applyValidationEvidence(accumulator, evidence, validatedCount);
+  applyAcceptanceEvidence(accumulator, evidence, acceptanceReviewedCount);
+  applyPenaltyEvidence(accumulator, attempt, features, {
+    semanticWrongPenalty,
+    noisyDiffRejections,
+    structuralFailureCount,
+    validationFailureCount,
+    validationWeakRejections: evidence.validationWeakRejections ?? 0,
+  });
+  applyFeatureBiases(accumulator, attempt, features);
 
   return {
     ...attempt,
-    score: clampScore(adjustedScore),
-    scoreBreakdown: breakdown,
+    score: clampScore(accumulator.score),
+    scoreBreakdown: accumulator.breakdown,
     signals: {
       ...attempt.signals,
       historicalBenchmarkMatches: evidence.benchmarkMatches,
       historicalProfileMatches: evidence.profileMatches,
+      historicalAcceptanceBenchmarks:
+        (evidence.acceptedBenchmarks ?? 0) + (evidence.rejectedBenchmarks ?? 0) + (evidence.needsReviewBenchmarks ?? 0),
       historicalReviewedPatches: reviewedCount,
       historicalValidatedPatches: validatedCount,
+      historicalStructuralFailures: structuralFailureCount,
+      historicalValidationFailures: validationFailureCount,
     },
   };
+}
+
+interface ScoreAccumulator {
+  score: number;
+  breakdown: string[];
+}
+
+function applyBenchmarkEvidence(
+  accumulator: ScoreAccumulator,
+  evidence: HistoricalEvidenceSnapshot['strategies'][PlanningStrategy],
+): void {
+  if (evidence.benchmarkMatches > 0) {
+    const benchmarkBonus = Math.min(0.03, evidence.benchmarkMatches * 0.005);
+    accumulator.score += benchmarkBonus;
+    accumulator.breakdown.push(
+      `+${benchmarkBonus.toFixed(2)} from ${evidence.benchmarkMatches} matching benchmark case(s)`,
+    );
+  }
+
+  if (evidence.profileMatches > 0) {
+    const profileBonus = Math.min(0.02, evidence.profileMatches * 0.01);
+    accumulator.score += profileBonus;
+    accumulator.breakdown.push(`+${profileBonus.toFixed(2)} from repository-profile matches in historical cases`);
+  }
+
+  if ((evidence.acceptanceProfileMatches ?? 0) > 0) {
+    const acceptanceProfileBonus = Math.min(0.02, (evidence.acceptanceProfileMatches ?? 0) * 0.005);
+    accumulator.score += acceptanceProfileBonus;
+    accumulator.breakdown.push(
+      `+${acceptanceProfileBonus.toFixed(2)} from acceptance benchmark cases with matching repo profiles`,
+    );
+  }
+}
+
+function applyReviewEvidence(
+  accumulator: ScoreAccumulator,
+  evidence: HistoricalEvidenceSnapshot['strategies'][PlanningStrategy],
+  reviewedCount: number,
+): void {
+  if (reviewedCount === 0) {
+    return;
+  }
+
+  const positiveReviewWeight = evidence.approvedReviews + evidence.prCandidates * 0.5;
+  const approvalRatio = positiveReviewWeight / reviewedCount;
+  const reviewDelta = clampSignedAdjustment((approvalRatio - 0.5) * 0.08, 0.04);
+  if (reviewDelta === 0) {
+    return;
+  }
+
+  accumulator.score += reviewDelta;
+  accumulator.breakdown.push(
+    `${formatSignedScore(reviewDelta)} from review outcomes (${reviewedCount} reviewed patch(es))`,
+  );
+}
+
+function applyValidationEvidence(
+  accumulator: ScoreAccumulator,
+  evidence: HistoricalEvidenceSnapshot['strategies'][PlanningStrategy],
+  validatedCount: number,
+): void {
+  if (validatedCount === 0) {
+    return;
+  }
+
+  const validationRatio = evidence.passedValidations / validatedCount;
+  const validationDelta = clampSignedAdjustment((validationRatio - 0.5) * 0.06, 0.03);
+  if (validationDelta === 0) {
+    return;
+  }
+
+  accumulator.score += validationDelta;
+  accumulator.breakdown.push(
+    `${formatSignedScore(validationDelta)} from validation history (${evidence.passedValidations}/${validatedCount} passed)`,
+  );
+}
+
+function applyAcceptanceEvidence(
+  accumulator: ScoreAccumulator,
+  evidence: HistoricalEvidenceSnapshot['strategies'][PlanningStrategy],
+  acceptanceReviewedCount: number,
+): void {
+  if (acceptanceReviewedCount === 0) {
+    return;
+  }
+
+  const acceptanceRatio = (evidence.acceptedBenchmarks ?? 0) / acceptanceReviewedCount;
+  const acceptanceDelta = clampSignedAdjustment((acceptanceRatio - 0.5) * 0.12, 0.06);
+  if (acceptanceDelta === 0) {
+    return;
+  }
+
+  accumulator.score += acceptanceDelta;
+  accumulator.breakdown.push(
+    `${formatSignedScore(acceptanceDelta)} from acceptance benchmark outcomes (${evidence.acceptedBenchmarks ?? 0}/${acceptanceReviewedCount} accepted)`,
+  );
+}
+
+function applyPenaltyEvidence(
+  accumulator: ScoreAccumulator,
+  attempt: StrategyAttempt,
+  features: CycleFeatureVector,
+  penalties: {
+    semanticWrongPenalty: number;
+    noisyDiffRejections: number;
+    structuralFailureCount: number;
+    validationFailureCount: number;
+    validationWeakRejections: number;
+  },
+): void {
+  if (penalties.semanticWrongPenalty > 0) {
+    accumulator.score -= penalties.semanticWrongPenalty;
+    accumulator.breakdown.push(
+      `-${penalties.semanticWrongPenalty.toFixed(2)} because similar fixes were marked semantically wrong`,
+    );
+  }
+
+  if (
+    (attempt.signals.introducesNewFile === true || attempt.strategy === 'extract_shared') &&
+    penalties.noisyDiffRejections > 0
+  ) {
+    const noisyDiffPenalty = Math.min(0.03, penalties.noisyDiffRejections * 0.01);
+    accumulator.score -= noisyDiffPenalty;
+    accumulator.breakdown.push(
+      `-${noisyDiffPenalty.toFixed(2)} because similar rewrites were rejected for noisy diffs or repo-convention mismatch`,
+    );
+  }
+
+  if (penalties.validationWeakRejections > 0 && features.validationCommandCount > 0) {
+    const validationWeakPenalty = Math.min(0.02, penalties.validationWeakRejections * 0.01);
+    accumulator.score -= validationWeakPenalty;
+    accumulator.breakdown.push(
+      `-${validationWeakPenalty.toFixed(2)} because similar candidates were rejected for weak validation coverage`,
+    );
+  }
+
+  if (penalties.structuralFailureCount > 0) {
+    const structuralFailurePenalty = Math.min(0.04, penalties.structuralFailureCount * 0.01);
+    accumulator.score -= structuralFailurePenalty;
+    accumulator.breakdown.push(
+      `-${structuralFailurePenalty.toFixed(2)} from replay history where the rewrite preserved or introduced cycles`,
+    );
+  }
+
+  if (penalties.validationFailureCount > 0) {
+    const validationFailurePenalty = Math.min(0.03, penalties.validationFailureCount * 0.01);
+    accumulator.score -= validationFailurePenalty;
+    accumulator.breakdown.push(
+      `-${validationFailurePenalty.toFixed(2)} from replay history where repo validation or typecheck failed`,
+    );
+  }
+}
+
+function applyFeatureBiases(
+  accumulator: ScoreAccumulator,
+  attempt: StrategyAttempt,
+  features: CycleFeatureVector,
+): void {
+  if (attempt.strategy === 'direct_import' && features.hasBarrelFile) {
+    accumulator.score += 0.01;
+    accumulator.breakdown.push('+0.01 because the cycle already contains a barrel entrypoint');
+  }
+
+  if (attempt.strategy === 'extract_shared' && features.validationCommandCount > 2) {
+    accumulator.score -= 0.01;
+    accumulator.breakdown.push('-0.01 because new shared modules are more fragile under heavier repo validation');
+  }
 }
 
 export function createNotApplicableAttempt(

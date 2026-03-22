@@ -120,6 +120,8 @@ pnpm run export:training-data -- --format parquet
 
 The runtime application still uses SQLite for scans, patches, and review state. Offline analytics should prefer DuckDB over exported Parquet datasets so ranking experiments and pattern mining stay fast without complicating the live app database.
 
+Training export is intentionally JS/TS-only. Benchmark cases mined from git history are only kept when the matching commit touched JavaScript or TypeScript files, and the exporter excludes benchmark rows that are not explicitly marked as JS/TS training-eligible.
+
 ## Engineering Principles
 
 - Prefer explainable ranking over opaque automation.

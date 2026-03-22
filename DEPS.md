@@ -136,6 +136,7 @@ This means:
 - keep heuristic scoring as the baseline
 - store versioned features and outcomes
 - add offline dataset export first
+- keep mined benchmark samples scoped to commits that touched JS/TS files
 - analyze exported datasets with DuckDB + Parquet before introducing model tooling
 - only add model tooling when benchmark data is stable enough to justify it
 

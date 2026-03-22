@@ -77,7 +77,22 @@ interface DiffFeatures {
   renamed_files: number;
   modified_files: number;
   binary_files: number;
+  js_ts_files_changed: number;
+  non_js_ts_files_changed: number;
 }
+
+interface ChangedFileSummary {
+  allPaths: string[];
+  jsTsPaths: string[];
+  nonJsTsPaths: string[];
+}
+
+interface DiffSummary {
+  diffFeatures: DiffFeatures;
+  changedFiles: ChangedFileSummary;
+}
+
+const TRAINING_CODE_EXTENSIONS = new Set(['.js', '.jsx', '.ts', '.tsx', '.mts', '.cts']);
 
 export async function mineBenchmarkCasesFromRepo(
   repoPath: string,
@@ -116,7 +131,11 @@ export async function mineBenchmarkCasesFromRepo(
       matchedTerms.add(term);
     }
 
-    const diffFeatures = await collectDiffFeatures(git, commit.commitSha);
+    const diffSummary = await collectDiffSummary(git, commit.commitSha);
+    if (diffSummary.changedFiles.jsTsPaths.length === 0) {
+      continue;
+    }
+
     const strategyLabels = classifyStrategyLabels(commitText);
     const url = buildCommitUrl(repository, commit.commitSha);
 
@@ -134,11 +153,12 @@ export async function mineBenchmarkCasesFromRepo(
         matched_terms: commitMatchedTerms,
         search_terms: searchTerms.length,
         commit_text_length: commitText.length,
+        language_scope: buildLanguageScopeSignals(diffSummary.changedFiles),
         ...buildBenchmarkContextSignals(options.caseContext),
       }),
-      diff_features: JSON.stringify(diffFeatures),
+      diff_features: JSON.stringify(diffSummary.diffFeatures),
       matched_terms: JSON.stringify(commitMatchedTerms),
-      notes: buildBenchmarkNote(commitMatchedTerms, diffFeatures, strategyLabels, options.caseContext),
+      notes: buildBenchmarkNote(commitMatchedTerms, diffSummary, strategyLabels, options.caseContext),
     });
 
     insertedCases += 1;
@@ -182,7 +202,7 @@ function findMatchedTerms(text: string, searchTerms: string[]): string[] {
   return searchTerms.filter((term) => lowerText.includes(term));
 }
 
-async function collectDiffFeatures(git: GitAdapter, commitSha: string): Promise<DiffFeatures> {
+async function collectDiffSummary(git: GitAdapter, commitSha: string): Promise<DiffSummary> {
   const [nameStatusOutput, numstatOutput] = await Promise.all([
     git.raw(['show', '--name-status', '--find-renames', '--format=', commitSha]),
     git.raw(['show', '--numstat', '--find-renames', '--format=', commitSha]),
@@ -204,9 +224,10 @@ async function collectDiffFeatures(git: GitAdapter, commitSha: string): Promise<
   let renamedFiles = 0;
   let modifiedFiles = 0;
   let binaryFiles = 0;
+  const changedPaths = new Set<string>();
 
   for (const line of nameStatusLines) {
-    const [status] = line.split('\t');
+    const [status, ...rawPaths] = line.split('\t');
     if (!status) {
       continue;
     }
@@ -218,6 +239,10 @@ async function collectDiffFeatures(git: GitAdapter, commitSha: string): Promise<
       renamedFiles += 1;
     } else if (status.startsWith('M')) {
       modifiedFiles += 1;
+    }
+
+    for (const filePath of rawPaths.map((value) => value.trim()).filter(Boolean)) {
+      changedPaths.add(filePath);
     }
   }
 
@@ -232,14 +257,21 @@ async function collectDiffFeatures(git: GitAdapter, commitSha: string): Promise<
     deletions += Number(deletes ?? 0);
   }
 
+  const changedFiles = summarizeChangedFiles([...changedPaths]);
+
   return {
-    files_changed: filesChanged,
-    additions,
-    deletions,
-    new_files: newFiles,
-    renamed_files: renamedFiles,
-    modified_files: modifiedFiles,
-    binary_files: binaryFiles,
+    diffFeatures: {
+      files_changed: filesChanged,
+      additions,
+      deletions,
+      new_files: newFiles,
+      renamed_files: renamedFiles,
+      modified_files: modifiedFiles,
+      binary_files: binaryFiles,
+      js_ts_files_changed: changedFiles.jsTsPaths.length,
+      non_js_ts_files_changed: changedFiles.nonJsTsPaths.length,
+    },
+    changedFiles,
   };
 }
 
@@ -280,7 +312,7 @@ function classifyStrategyLabels(commitText: string): string[] {
 
 function buildBenchmarkNote(
   matchedTerms: string[],
-  diffFeatures: DiffFeatures,
+  diffSummary: DiffSummary,
   labels: string[],
   context?: BenchmarkCaseContext,
 ): string {
@@ -308,9 +340,20 @@ function buildBenchmarkNote(
   return [
     `matched terms: ${matchedTerms.join(', ')}`,
     `labels: ${labels.join(', ')}`,
-    `files changed: ${diffFeatures.files_changed}`,
+    `files changed: ${diffSummary.diffFeatures.files_changed}`,
+    `training language scope: js/ts (${diffSummary.changedFiles.jsTsPaths.length} code files)`,
     ...contextParts,
   ].join('; ');
+}
+
+function buildLanguageScopeSignals(changedFiles: ChangedFileSummary): Record<string, unknown> {
+  return {
+    training_language: 'js_ts',
+    eligible: true,
+    js_ts_changed_files: changedFiles.jsTsPaths,
+    non_js_ts_changed_files: changedFiles.nonJsTsPaths,
+    total_changed_paths: changedFiles.allPaths.length,
+  };
 }
 
 function buildBenchmarkContextSignals(context?: BenchmarkCaseContext): Record<string, unknown> {
@@ -370,4 +413,34 @@ function buildCommitUrl(repository: string, commitSha: string): string | null {
   }
 
   return `https://github.com/${repository}/commit/${commitSha}`;
+}
+
+function summarizeChangedFiles(paths: string[]): ChangedFileSummary {
+  const uniquePaths = [...new Set(paths.map((filePath) => filePath.trim()).filter(Boolean))];
+  const jsTsPaths: string[] = [];
+  const nonJsTsPaths: string[] = [];
+
+  for (const filePath of uniquePaths) {
+    if (isJavaScriptOrTypeScriptPath(filePath)) {
+      jsTsPaths.push(filePath);
+      continue;
+    }
+
+    nonJsTsPaths.push(filePath);
+  }
+
+  return {
+    allPaths: uniquePaths,
+    jsTsPaths,
+    nonJsTsPaths,
+  };
+}
+
+function isJavaScriptOrTypeScriptPath(filePath: string): boolean {
+  const normalizedPath = filePath.trim().toLowerCase();
+  if (!normalizedPath) {
+    return false;
+  }
+
+  return TRAINING_CODE_EXTENSIONS.has(path.extname(normalizedPath));
 }

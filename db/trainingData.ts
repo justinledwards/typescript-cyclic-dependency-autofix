@@ -231,7 +231,7 @@ export function getTrainingDataExport(database: DatabaseType = getDb()): Trainin
   const cycleObservationRows = loadLatestCycleObservationRows(database);
   const candidateObservationRows = loadLatestCandidateObservationRows(database);
   const acceptanceRows = loadAcceptanceBenchmarkRows(database);
-  const benchmarkRows = loadBenchmarkCaseRows(database);
+  const benchmarkRows = loadBenchmarkCaseRows(database).filter((row) => isTrainingEligibleBenchmarkCase(row));
 
   const rows: TrainingDataRow[] = [
     ...cycleObservationRows.map((row) => mapCycleObservationRow(row)),
@@ -507,6 +507,13 @@ function mapBenchmarkCaseRow(row: BenchmarkCaseDTO): BenchmarkCaseTrainingRow {
   };
 }
 
+function isTrainingEligibleBenchmarkCase(row: BenchmarkCaseDTO): boolean {
+  const signals = parseJsonRecord(row.validation_signals);
+  const languageScope = asRecord(signals.language_scope);
+
+  return languageScope?.training_language === 'js_ts' && languageScope.eligible === true;
+}
+
 function parseJsonRecord(value: string | null): Record<string, unknown> {
   return parseJsonValue<Record<string, unknown>>(value, {});
 }
@@ -517,6 +524,14 @@ function parseJsonNullableRecord(value: string | null): Record<string, unknown> 
   }
 
   return parseJsonValue<Record<string, unknown>>(value, {});
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
 }
 
 function parseJsonArray(value: string | null): unknown[] {

@@ -2,24 +2,13 @@ import path from 'node:path';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import simpleGit from 'simple-git';
 import { createStatements, getDb } from '../db/index.js';
+import {
+  classifyStrategyLabels,
+  findMatchedTerms,
+  getDefaultBenchmarkSearchTerms,
+  normalizeSearchTerms,
+} from './benchmarkSignals.js';
 import type { RepositoryProfile } from './repoProfile.js';
-
-const DEFAULT_SEARCH_TERMS = [
-  'circular dependency',
-  'cyclic dependency',
-  'import type',
-  'type-only',
-  'barrel',
-  're-export',
-  'reexport',
-  'index.ts',
-  'index.js',
-  'extract shared',
-  'move helper',
-  'break cycle',
-  'internal.ts',
-  'internal.js',
-];
 
 const LOG_RECORD_SEPARATOR = '\u001E';
 const LOG_FIELD_SEPARATOR = '\u001F';
@@ -102,7 +91,7 @@ export async function mineBenchmarkCasesFromRepo(
   const statements = createStatements(database);
   const git = options.git ?? simpleGit(repoPath);
   const repository = options.repositoryLabel ?? (await resolveRepositoryLabel(git, repoPath));
-  const searchTerms = normalizeSearchTerms(options.searchTerms ?? DEFAULT_SEARCH_TERMS);
+  const searchTerms = normalizeSearchTerms(options.searchTerms ?? getDefaultBenchmarkSearchTerms());
   const maxCommits = options.maxCommits ?? 1000;
   const maxMatches = options.maxMatches ?? 25;
 
@@ -177,10 +166,6 @@ export async function mineBenchmarkCasesFromRepo(
   };
 }
 
-function normalizeSearchTerms(terms: string[]): string[] {
-  return [...new Set(terms.map((term) => term.trim().toLowerCase()).filter(Boolean))];
-}
-
 function parseCommitRecords(logOutput: string): ParsedCommitRecord[] {
   return logOutput
     .split(LOG_RECORD_SEPARATOR)
@@ -195,11 +180,6 @@ function parseCommitRecords(logOutput: string): ParsedCommitRecord[] {
       };
     })
     .filter((record) => record.commitSha.length > 0);
-}
-
-function findMatchedTerms(text: string, searchTerms: string[]): string[] {
-  const lowerText = text.toLowerCase();
-  return searchTerms.filter((term) => lowerText.includes(term));
 }
 
 async function collectDiffSummary(git: GitAdapter, commitSha: string): Promise<DiffSummary> {
@@ -273,41 +253,6 @@ async function collectDiffSummary(git: GitAdapter, commitSha: string): Promise<D
     },
     changedFiles,
   };
-}
-
-function classifyStrategyLabels(commitText: string): string[] {
-  const lowerText = commitText.toLowerCase();
-  const labels = new Set<string>();
-
-  if (/import\s+type|type-only|type only/.test(lowerText)) {
-    labels.add('import_type');
-    labels.add('type_runtime_split');
-  }
-
-  if (/barrel|re-?export|index\.(ts|tsx|js|jsx)/.test(lowerText)) {
-    labels.add('barrel_reexport_cleanup');
-    labels.add('direct_import');
-  }
-
-  if (/extract shared|shared module|shared file|move helper|split helper|leaf-like/.test(lowerText)) {
-    labels.add('extract_shared');
-    labels.add('leaf_cluster_extraction');
-  }
-
-  if (/setter|state update|host-owned|stateful singleton|dependency inversion/.test(lowerText)) {
-    labels.add('host_owned_state_update');
-    labels.add('stateful_singleton_split');
-  }
-
-  if (/internal\.(ts|js)|module loading order|internal entrypoint/.test(lowerText)) {
-    labels.add('internal_entrypoint_pattern');
-  }
-
-  if (labels.size === 0) {
-    labels.add('unclassified');
-  }
-
-  return [...labels];
 }
 
 function buildBenchmarkNote(

@@ -17,6 +17,7 @@ import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
 import { exportTrainingData } from './exportTrainingData.js';
+import { importBenchmarkDataset } from './importBenchmarkDataset.js';
 import { createProgram } from './index.js';
 import { getOperationalMetrics } from './metrics.js';
 import { profileRepository } from './repoProfile.js';
@@ -439,6 +440,21 @@ vi.mock('./exportTrainingData.js', () => ({
   }),
 }));
 
+vi.mock('./importBenchmarkDataset.js', () => ({
+  importBenchmarkDataset: vi.fn().mockResolvedValue({
+    inputPath: path.join(fixtureRoot, 'datasets', 'swebench.parquet'),
+    datasetName: 'swe-bench-multilingual',
+    source: 'dataset:swe-bench-multilingual',
+    format: 'parquet',
+    totalRows: 10,
+    jsTsRows: 4,
+    relatedRows: 2,
+    insertedCases: 2,
+    skippedNonJsTs: 6,
+    skippedUnrelated: 2,
+  }),
+}));
+
 vi.mock('./metrics.js', () => ({
   getOperationalMetrics: vi.fn().mockReturnValue({
     repositories: {
@@ -626,6 +642,42 @@ describe('CLI', () => {
       maxCommits: undefined,
       maxMatches: undefined,
     });
+    consoleSpy.mockRestore();
+  });
+
+  it('benchmark:import command imports external dataset rows', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'benchmark:import',
+      path.join(fixtureRoot, 'datasets', 'swebench.parquet'),
+      '--dataset',
+      'swe-bench-multilingual',
+      '--format',
+      'parquet',
+      '--search-term',
+      'circular import',
+    ]);
+
+    expect(vi.mocked(importBenchmarkDataset)).toHaveBeenCalledWith(
+      path.join(fixtureRoot, 'datasets', 'swebench.parquet'),
+      {
+        datasetName: 'swe-bench-multilingual',
+        source: undefined,
+        format: 'parquet',
+        maxRows: undefined,
+        searchTerms: ['circular import'],
+        relatedOnly: true,
+      },
+    );
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('"datasetName": "swe-bench-multilingual"'));
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('"insertedCases": 2'));
+    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('"format": "parquet"'));
+
     consoleSpy.mockRestore();
   });
 
@@ -1202,6 +1254,7 @@ describe('CLI', () => {
     expect(commandNames).toContain('benchmark:acceptance');
     expect(commandNames).toContain('benchmark:acceptance:report');
     expect(commandNames).toContain('benchmark:acceptance:annotate');
+    expect(commandNames).toContain('benchmark:import');
     expect(commandNames).toContain('scan');
     expect(commandNames).toContain('explain');
     expect(commandNames).toContain('profile:repo');

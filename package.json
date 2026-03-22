@@ -23,6 +23,7 @@
     "explain": "tsx cli/index.ts explain",
     "profile:repo": "tsx cli/index.ts profile:repo",
     "metrics:report": "tsx cli/index.ts metrics:report",
+    "benchmark:import": "tsx cli/index.ts benchmark:import",
     "mine:corpus": "tsx cli/index.ts mine:corpus",
     "mine:repo-history": "tsx cli/index.ts mine:repo-history",
     "scan:all": "tsx cli/index.ts scan:all",

@@ -77,7 +77,7 @@ The medium-term technical direction is explicit:
 - compute symbol-level SCCs, import/export edges, re-export resolution, and side-effect risk
 - search over candidate graph edits instead of only applying fixed heuristics
 - use weighted edge scoring, def-use slicing, and clustering to find the cheapest safe cycle-breaking rewrites
-- export model-ready datasets and add learned ranking later, only for ranking already-safe candidates
+- export model-ready datasets and analyze them with DuckDB + Parquet before adding learned ranking
 
 ML is not the correctness mechanism. Validation and structural safety checks remain the correctness boundary.
 
@@ -115,9 +115,10 @@ pnpm run scan <repo-url-or-path>
 pnpm run scan:all
 pnpm run retry:failed
 pnpm run export:patches
+pnpm run export:training-data -- --format parquet
 ```
 
-Planned additions include rescoring, reporting, and corpus-analysis commands that make the data loop directly inspectable.
+The runtime application still uses SQLite for scans, patches, and review state. Offline analytics should prefer DuckDB over exported Parquet datasets so ranking experiments and pattern mining stay fast without complicating the live app database.
 
 ## Engineering Principles
 

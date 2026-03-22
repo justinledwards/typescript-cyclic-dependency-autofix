@@ -29,9 +29,11 @@
     "retry:failed": "tsx cli/index.ts retry:failed",
     "create:pr": "tsx cli/index.ts create:pr",
     "export:patches": "tsx cli/index.ts export:patches",
+    "export:training-data": "tsx cli/index.ts export:training-data",
     "prepare": "husky"
   },
   "dependencies": {
+    "@duckdb/node-api": "1.5.0-r.1",
     "@fastify/cors": "^11.0.1",
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/react-devtools": "latest",

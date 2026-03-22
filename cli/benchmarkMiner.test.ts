@@ -19,6 +19,11 @@ function createFakeGit(): GitAdapter {
       title: 'Unrelated chore',
       body: 'Refresh docs and formatting only.',
     },
+    {
+      sha: 'jkl000',
+      title: 'Document circular dependency workaround',
+      body: 'Describe the approach in README without changing runtime code.',
+    },
   ];
 
   const logOutput = commits.map((commit) => `${commit.sha}\u001F${commit.title}\u001F${commit.body}\u001E`).join('');
@@ -28,6 +33,8 @@ function createFakeGit(): GitAdapter {
     ['show --numstat --find-renames --format= abc123', '4\t2\tfile-a.ts\n3\t0\tfile-b.ts\n'],
     ['show --name-status --find-renames --format= def456', 'M\tshared.ts\nR100\told.ts\tnew.ts\n'],
     ['show --numstat --find-renames --format= def456', '6\t1\tshared.ts\n2\t2\tnew.ts\n'],
+    ['show --name-status --find-renames --format= jkl000', 'M\tREADME.md\nA\tdocs/cycles.md\n'],
+    ['show --numstat --find-renames --format= jkl000', '8\t0\tREADME.md\n4\t0\tdocs/cycles.md\n'],
   ]);
 
   return {
@@ -75,8 +82,8 @@ describe('mineBenchmarkCasesFromRepo', () => {
 
     expect(result).toMatchObject({
       repository: 'acme/widget',
-      scannedCommits: 3,
-      matchedCommits: 2,
+      scannedCommits: 4,
+      matchedCommits: 3,
       insertedCases: 2,
     });
     expect(result.matchedTerms).toEqual(expect.arrayContaining(['circular dependency', 'import type', 'barrel']));
@@ -99,12 +106,22 @@ describe('mineBenchmarkCasesFromRepo', () => {
       renamed_files: 0,
       modified_files: 1,
       binary_files: 0,
+      js_ts_files_changed: 2,
+      non_js_ts_files_changed: 0,
     });
     expect(JSON.parse(importTypeCase?.validation_signals ?? '{}')).toMatchObject({
       search_terms: expect.any(Number),
       matched_terms: expect.any(Array),
+      language_scope: {
+        training_language: 'js_ts',
+        eligible: true,
+        js_ts_changed_files: ['file-a.ts', 'file-b.ts'],
+        non_js_ts_changed_files: [],
+        total_changed_paths: 2,
+      },
     });
     expect(importTypeCase?.notes).toContain('matched terms:');
+    expect(importTypeCase?.notes).toContain('training language scope: js/ts');
 
     db.close();
   });
@@ -156,6 +173,30 @@ describe('mineBenchmarkCasesFromRepo', () => {
     expect(result.insertedCases).toBe(1);
     expect(cases).toHaveLength(1);
     expect(cases[0].commit_sha).toBe('abc123');
+
+    db.close();
+  });
+
+  it('skips matched commits that only touch non-JS/TS files', async () => {
+    const db = createDatabase(':memory:');
+    initSchema(db);
+    const git = createFakeGit();
+
+    // eslint-disable-next-line sonarjs/publicly-writable-directories
+    const result = await mineBenchmarkCasesFromRepo('/tmp/acme-widget', {
+      database: db,
+      git,
+      maxMatches: 10,
+      searchTerms: ['circular dependency'],
+    });
+
+    const cases = createStatements(db).getBenchmarkCasesByRepository.all('acme/widget') as Array<{
+      commit_sha: string;
+    }>;
+
+    expect(result.matchedCommits).toBe(2);
+    expect(result.insertedCases).toBe(1);
+    expect(cases.map((entry) => ({ commit_sha: entry.commit_sha }))).toEqual([{ commit_sha: 'abc123' }]);
 
     db.close();
   });

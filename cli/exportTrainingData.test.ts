@@ -63,6 +63,8 @@ describe('exportTrainingData', () => {
         expect.objectContaining({ rowType: 'benchmark_case' }),
       ]),
     );
+    const benchmarkRows = rows.filter((row) => row.rowType === 'benchmark_case');
+    expect(benchmarkRows).toHaveLength(1);
   });
 
   it('exports Parquet training rows through DuckDB', async () => {
@@ -228,9 +230,41 @@ function seedTrainingRows(statements: ReturnType<typeof createStatements>) {
     pr_number: null,
     issue_number: null,
     strategy_labels: JSON.stringify(['import_type']),
-    validation_signals: JSON.stringify({ repository_profile: { package_manager: 'pnpm' } }),
+    validation_signals: JSON.stringify({
+      repository_profile: { package_manager: 'pnpm' },
+      language_scope: {
+        training_language: 'js_ts',
+        eligible: true,
+        js_ts_changed_files: ['src/a.ts'],
+        non_js_ts_changed_files: ['README.md'],
+        total_changed_paths: 2,
+      },
+    }),
     diff_features: JSON.stringify({ filesTouched: 1 }),
     matched_terms: JSON.stringify(['circular dependency', 'import type']),
     notes: 'Seed benchmark sample',
+  });
+  statements.addBenchmarkCase.run({
+    repository: 'acme/widget',
+    source: 'git_history',
+    commit_sha: 'ghi789',
+    title: 'Document circular dependency workaround',
+    body: 'Docs-only follow-up.',
+    url: 'https://example.com/commit/ghi789',
+    pr_number: null,
+    issue_number: null,
+    strategy_labels: JSON.stringify(['unclassified']),
+    validation_signals: JSON.stringify({
+      language_scope: {
+        training_language: 'js_ts',
+        eligible: false,
+        js_ts_changed_files: [],
+        non_js_ts_changed_files: ['README.md'],
+        total_changed_paths: 1,
+      },
+    }),
+    diff_features: JSON.stringify({ filesTouched: 1 }),
+    matched_terms: JSON.stringify(['circular dependency']),
+    notes: 'Should be filtered from training export',
   });
 }

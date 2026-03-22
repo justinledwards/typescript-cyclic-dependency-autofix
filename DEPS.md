@@ -58,6 +58,7 @@ mise install
 |---|---|
 | `simple-git` | Clone, fetch, branch, and patch export workflows |
 | `commander` | CLI surface for scan, retry, export, and future reporting commands |
+| `@duckdb/node-api` | Offline analytics engine for converting exported training data into DuckDB-queryable Parquet datasets |
 
 ### Data and API surface
 
@@ -107,6 +108,7 @@ Current stack support:
 - `better-sqlite3`
 - `fastify`
 - `commander`
+- `@duckdb/node-api` for offline analytical export, not runtime transactional state
 
 ### 2. Graph and search infrastructure
 
@@ -134,6 +136,7 @@ This means:
 - keep heuristic scoring as the baseline
 - store versioned features and outcomes
 - add offline dataset export first
+- analyze exported datasets with DuckDB + Parquet before introducing model tooling
 - only add model tooling when benchmark data is stable enough to justify it
 
 No ML framework is a required dependency yet by design.

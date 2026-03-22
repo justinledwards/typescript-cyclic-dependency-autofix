@@ -16,6 +16,7 @@ import { mineBenchmarkCasesFromCorpus } from './benchmarkCorpus.js';
 import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
+import { exportTrainingData } from './exportTrainingData.js';
 import { createProgram } from './index.js';
 import { getOperationalMetrics } from './metrics.js';
 import { profileRepository } from './repoProfile.js';
@@ -423,6 +424,18 @@ vi.mock('./exportPatches.js', () => ({
     outputDir: exportedDir,
     exportedCount: 2,
     files: [path.join(exportedDir, 'a.patch'), path.join(exportedDir, 'b.patch')],
+  }),
+}));
+
+vi.mock('./exportTrainingData.js', () => ({
+  exportTrainingData: vi.fn().mockResolvedValue({
+    outputPath: path.join(exportedDir, 'training-data.parquet'),
+    format: 'parquet',
+    totalRows: 12,
+    cycleObservationRows: 3,
+    candidateObservationRows: 6,
+    acceptanceBenchmarkRows: 2,
+    benchmarkCaseRows: 1,
   }),
 }));
 
@@ -943,6 +956,31 @@ describe('CLI', () => {
     consoleSpy.mockRestore();
   });
 
+  it('export:training-data command prints export metadata as JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'export:training-data',
+      path.join(exportedDir, 'dataset.parquet'),
+      '--format',
+      'parquet',
+    ]);
+
+    expect(vi.mocked(exportTrainingData)).toHaveBeenCalledWith(path.join(exportedDir, 'dataset.parquet'), {
+      format: 'parquet',
+    });
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      outputPath: path.join(exportedDir, 'training-data.parquet'),
+      format: 'parquet',
+      totalRows: 12,
+    });
+    consoleSpy.mockRestore();
+  });
+
   it('create:pr command creates a pull request from a stored patch', async () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const program = createProgram();
@@ -1178,5 +1216,6 @@ describe('CLI', () => {
     expect(commandNames).toContain('retry:failed');
     expect(commandNames).toContain('create:pr');
     expect(commandNames).toContain('export:patches');
+    expect(commandNames).toContain('export:training-data');
   });
 });

@@ -14,6 +14,7 @@ import { mineBenchmarkCasesFromCorpus } from './benchmarkCorpus.js';
 import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
+import { exportTrainingData, type TrainingDataFormat } from './exportTrainingData.js';
 import { getOperationalMetrics } from './metrics.js';
 import {
   createConcurrencyLimiter,
@@ -475,6 +476,23 @@ export function createProgram(): Command {
       console.log(`Exported ${result.exportedCount} patch file(s) to ${result.outputDir}`);
     });
 
+  program
+    .command('export:training-data')
+    .argument('[outputPath]', 'Path to write the exported training dataset to')
+    .option('--format <format>', 'Export format: jsonl, json, or parquet', parseTrainingDataFormat, 'jsonl')
+    .description('Export model-ready training data from observations, benchmarks, and reviews')
+    .action(async (outputPath: string | undefined, options: { format: TrainingDataFormat }) => {
+      try {
+        const result = await exportTrainingData(outputPath, {
+          format: options.format,
+        });
+        console.log(JSON.stringify(result, null, 2));
+      } catch (error) {
+        console.error('Failed to export training data:', error);
+        process.exit(1);
+      }
+    });
+
   return program;
 }
 
@@ -538,6 +556,14 @@ function parseAcceptanceRejectionReason(
   throw new Error(
     `Expected a rejection reason of diff_noisy, validation_weak, semantic_wrong, repo_conventions_mismatch, or other. Received: ${value}`,
   );
+}
+
+function parseTrainingDataFormat(value: string): TrainingDataFormat {
+  if (value === 'json' || value === 'jsonl' || value === 'parquet') {
+    return value;
+  }
+
+  throw new Error(`Expected a training-data export format of json, jsonl, or parquet. Received: ${value}`);
 }
 
 // Run when executed directly

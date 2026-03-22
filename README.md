@@ -111,6 +111,7 @@ pnpm run dev
 ## Current CLI Surface
 
 ```bash
+pnpm run benchmark:import <dataset-path> -- --dataset swe-bench-multilingual --format parquet
 pnpm run scan <repo-url-or-path>
 pnpm run scan:all
 pnpm run retry:failed
@@ -121,6 +122,8 @@ pnpm run export:training-data -- --format parquet
 The runtime application still uses SQLite for scans, patches, and review state. Offline analytics should prefer DuckDB over exported Parquet datasets so ranking experiments and pattern mining stay fast without complicating the live app database.
 
 Training export is intentionally JS/TS-only. Benchmark cases mined from git history are only kept when the matching commit touched JavaScript or TypeScript files, and the exporter excludes benchmark rows that are not explicitly marked as JS/TS training-eligible.
+
+External dataset import follows the same rule. Imported benchmark rows are only stored when they touch JS/TS files, and by default they must also look cycle-related based on the benchmark search terms so the benchmark table stays useful for circular-dependency ranking instead of filling with unrelated bugfixes.
 
 ## Engineering Principles
 

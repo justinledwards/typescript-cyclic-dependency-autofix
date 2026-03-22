@@ -15,6 +15,7 @@ import { mineBenchmarkCasesFromRepo } from './benchmarkMiner.js';
 import { createPullRequestForPatch } from './createPullRequest.js';
 import { exportApprovedPatches } from './exportPatches.js';
 import { exportTrainingData, type TrainingDataFormat } from './exportTrainingData.js';
+import { type BenchmarkDatasetFormat, importBenchmarkDataset } from './importBenchmarkDataset.js';
 import { getOperationalMetrics } from './metrics.js';
 import {
   createConcurrencyLimiter,
@@ -169,6 +170,44 @@ export function createProgram(): Command {
           console.log(JSON.stringify(result, null, 2));
         } catch (error) {
           console.error(`Failed to annotate acceptance benchmark case ${caseId}:`, error);
+          process.exit(1);
+        }
+      },
+    );
+
+  program
+    .command('benchmark:import <inputPath>')
+    .description('Import external benchmark dataset rows into the benchmark database')
+    .option('--dataset <name>', 'Dataset label to persist alongside imported rows')
+    .option('--source <source>', 'Override the stored benchmark source label')
+    .option('--format <format>', 'Import format: json, jsonl, or parquet', parseBenchmarkDatasetFormat)
+    .option('--max-rows <count>', 'Limit how many dataset rows are processed', parseInteger)
+    .option('--search-term <term>', 'Additional cycle-related search term to match', collectString, [])
+    .option('--allow-unrelated', 'Import JS/TS rows even when they do not match cycle-related terms')
+    .action(
+      async (
+        inputPath: string,
+        options: {
+          dataset?: string;
+          source?: string;
+          format?: BenchmarkDatasetFormat;
+          maxRows?: number;
+          searchTerm: string[];
+          allowUnrelated?: boolean;
+        },
+      ) => {
+        try {
+          const result = await importBenchmarkDataset(inputPath, {
+            datasetName: options.dataset,
+            source: options.source,
+            format: options.format,
+            maxRows: options.maxRows,
+            searchTerms: options.searchTerm.length > 0 ? options.searchTerm : undefined,
+            relatedOnly: !options.allowUnrelated,
+          });
+          console.log(JSON.stringify(result, null, 2));
+        } catch (error) {
+          console.error(`Failed to import benchmark dataset ${inputPath}:`, error);
           process.exit(1);
         }
       },
@@ -564,6 +603,14 @@ function parseTrainingDataFormat(value: string): TrainingDataFormat {
   }
 
   throw new Error(`Expected a training-data export format of json, jsonl, or parquet. Received: ${value}`);
+}
+
+function parseBenchmarkDatasetFormat(value: string): BenchmarkDatasetFormat {
+  if (value === 'json' || value === 'jsonl' || value === 'parquet') {
+    return value;
+  }
+
+  throw new Error(`Expected a benchmark dataset format of json, jsonl, or parquet. Received: ${value}`);
 }
 
 // Run when executed directly

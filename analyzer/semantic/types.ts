@@ -45,6 +45,76 @@ export interface HostStateUpdateFixPlan {
 export type PlanningStrategy = 'import_type' | 'direct_import' | 'extract_shared' | 'host_state_update';
 export type StrategySignalValue = boolean | number | string;
 
+export interface GraphModuleSummary {
+  file: string;
+  exportedSymbols: string[];
+  localExportedSymbols: string[];
+  movableSymbols: string[];
+  moduleKind: 'declaration_only' | 'mixed' | 'pure_barrel';
+  hasReExports: boolean;
+  hasTopLevelSideEffects: boolean;
+}
+
+export interface GraphImportEdge {
+  from: string;
+  to: string;
+  kind: 'side_effect' | 'type' | 'value';
+  symbols: string[];
+  withinCycle: boolean;
+}
+
+export interface GraphExportEdge {
+  from: string;
+  to: string;
+  kind: 'named_reexport' | 'namespace_reexport';
+  exportedName: string;
+  localName: string | null;
+}
+
+export interface GraphSymbolNode {
+  id: string;
+  file: string;
+  symbol: string;
+  kind: 'class' | 'enum' | 'function' | 'interface' | 'type_alias' | 'variable';
+  exported: boolean;
+  movable: boolean;
+}
+
+export interface GraphSymbolEdge {
+  from: string;
+  to: string;
+  kind: 'import' | 'reference';
+}
+
+export interface GraphExportResolution {
+  barrelFile: string;
+  exportedName: string;
+  targetFile: string | null;
+  targetSymbol: string | null;
+  ambiguous: boolean;
+}
+
+export interface CycleGraphSummary {
+  modules: GraphModuleSummary[];
+  importEdges: GraphImportEdge[];
+  exportEdges: GraphExportEdge[];
+  symbolNodes: GraphSymbolNode[];
+  symbolEdges: GraphSymbolEdge[];
+  symbolSccs: string[][];
+  exportResolutions: GraphExportResolution[];
+  metrics: {
+    moduleCount: number;
+    importEdgeCount: number;
+    exportEdgeCount: number;
+    symbolNodeCount: number;
+    symbolEdgeCount: number;
+    symbolSccCount: number;
+    barrelModuleCount: number;
+    sideEffectModuleCount: number;
+    movableSymbolCount: number;
+  };
+}
+
 export interface PlannerRepositoryProfile {
   packageManager: 'bun' | 'npm' | 'pnpm' | 'unknown' | 'yarn';
   workspaceMode: 'single-package' | 'unknown' | 'workspace';
@@ -64,6 +134,13 @@ export interface CycleFeatureVector {
   packageManager: PlannerRepositoryProfile['packageManager'];
   workspaceMode: PlannerRepositoryProfile['workspaceMode'];
   validationCommandCount: number;
+  barrelModuleCount?: number;
+  sideEffectModuleCount?: number;
+  exportEdgeCount?: number;
+  movableSymbolCount?: number;
+  symbolNodeCount?: number;
+  symbolEdgeCount?: number;
+  symbolSccCount?: number;
 }
 
 export interface StrategyHistoricalEvidence {
@@ -120,6 +197,7 @@ export interface CyclePlanningResult {
   cycleShape: 'two_file' | 'multi_file';
   cycleSignals: Record<string, StrategySignalValue>;
   features: CycleFeatureVector;
+  graphSummary?: CycleGraphSummary;
   fallbackClassification: Classification;
   fallbackConfidence: number;
   fallbackReasons: string[];
@@ -142,6 +220,7 @@ export interface SemanticAnalysisResult {
 
 export interface DirectImportSearchResult {
   plan?: DirectImportFixPlan['imports'];
+  ambiguousResolution?: boolean;
   sawBarrelScenario: boolean;
 }
 
@@ -155,6 +234,7 @@ export interface CyclePlanningContext {
   cycleSignals: Record<string, StrategySignalValue>;
   repositoryProfile?: PlannerRepositoryProfile;
   historicalEvidence: HistoricalEvidenceSnapshot;
+  graphSummary: CycleGraphSummary;
   features: CycleFeatureVector;
 }
 

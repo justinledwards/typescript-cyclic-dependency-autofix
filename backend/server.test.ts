@@ -773,6 +773,279 @@ describe('backend API', () => {
     });
   });
 
+  describe('reports', () => {
+    it('GET /api/reports/patterns returns aggregated observation data', async () => {
+      const stmts = createStatements(testDb);
+      const repoInfo = stmts.addRepository.run({
+        owner: 'patterns',
+        name: 'repo',
+        default_branch: null,
+        local_path: replayDetailPath,
+      });
+      const scanInfo = stmts.addScan.run({
+        repository_id: repoInfo.lastInsertRowid,
+        commit_sha: 'pattern123',
+        status: 'completed',
+      });
+      const cycleInfo = stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        participating_files: JSON.stringify(['a.ts', 'b.ts', 'a.ts']),
+        raw_payload: null,
+      });
+      const observationInfo = stmts.addCycleObservation.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        scan_id: scanInfo.lastInsertRowid,
+        repository_id: repoInfo.lastInsertRowid,
+        observation_version: 1,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        cycle_shape: 'two_file',
+        cycle_size: 2,
+        cycle_signals: '{"explicitImportEdges":2}',
+        feature_vector:
+          '{"hasBarrelFile":true,"hasSharedModuleFile":false,"packageManager":"pnpm","workspaceMode":"workspace"}',
+        repo_profile: '{"packageManager":"pnpm","workspaceMode":"workspace","validationCommandCount":2}',
+        planner_summary: 'No strategy cleared the safety filters.',
+        planner_attempts: '[]',
+        selected_strategy: null,
+        selected_classification: 'unsupported',
+        selected_score: null,
+        fallback_classification: 'unsupported',
+        fallback_confidence: 1,
+        fallback_reasons: '["Only two-file cycles are supported for autofix in v1."]',
+      });
+      stmts.addCandidateObservation.run({
+        cycle_observation_id: observationInfo.lastInsertRowid,
+        observation_version: 1,
+        fix_candidate_id: null,
+        patch_id: null,
+        strategy: 'extract_shared',
+        status: 'rejected',
+        planner_rank: 0,
+        promotion_eligible: 0,
+        summary: 'No safe extraction found',
+        classification: null,
+        confidence: null,
+        upstreamability_score: null,
+        reasons: '["Imported symbols rely on runtime state."]',
+        score_breakdown: null,
+        signals: '{"loadedFiles":2}',
+        plan: null,
+        validation_status: null,
+        validation_summary: null,
+        validation_failure_category: 'original_cycle_persisted',
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/api/reports/patterns' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        summary: {
+          cycleObservations: 1,
+          candidateObservations: 1,
+        },
+      });
+      expect(response.json().unsupportedClusters).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            classification: 'unsupported',
+            cycleShape: 'two_file',
+            count: 1,
+          }),
+        ]),
+      );
+    });
+
+    it('GET /api/reports/strategy-performance returns profile and acceptance summaries', async () => {
+      const stmts = createStatements(testDb);
+      const repoInfo = stmts.addRepository.run({
+        owner: 'strategy',
+        name: 'repo',
+        default_branch: null,
+        local_path: replayDetailPath,
+      });
+      const scanInfo = stmts.addScan.run({
+        repository_id: repoInfo.lastInsertRowid,
+        commit_sha: 'strategy123',
+        status: 'completed',
+      });
+      const cycleInfo = stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'c.ts -> d.ts -> c.ts',
+        participating_files: JSON.stringify(['c.ts', 'd.ts', 'c.ts']),
+        raw_payload: null,
+      });
+      const observationInfo = stmts.addCycleObservation.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        scan_id: scanInfo.lastInsertRowid,
+        repository_id: repoInfo.lastInsertRowid,
+        observation_version: 1,
+        normalized_path: 'c.ts -> d.ts -> c.ts',
+        cycle_shape: 'two_file',
+        cycle_size: 2,
+        cycle_signals: '{"explicitImportEdges":2}',
+        feature_vector: '{"packageManager":"pnpm","workspaceMode":"workspace"}',
+        repo_profile: '{"packageManager":"pnpm","workspaceMode":"workspace","validationCommandCount":2}',
+        planner_summary: 'Selected import_type',
+        planner_attempts: '[]',
+        selected_strategy: 'import_type',
+        selected_classification: 'autofix_import_type',
+        selected_score: 0.93,
+        fallback_classification: 'autofix_import_type',
+        fallback_confidence: 0.9,
+        fallback_reasons: '[]',
+      });
+      const fixCandidateInfo = stmts.addFixCandidate.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        strategy: 'import_type',
+        planner_rank: 1,
+        classification: 'autofix_import_type',
+        confidence: 0.9,
+        upstreamability_score: 0.93,
+        reasons: '["Convert imports to type-only"]',
+        summary: 'Convert imports to type-only',
+        score_breakdown: '["base 0.97"]',
+        signals: '{"touchedFiles":1}',
+      });
+      const patchInfo = stmts.addPatch.run({
+        fix_candidate_id: fixCandidateInfo.lastInsertRowid,
+        patch_text: 'diff',
+        touched_files: '["c.ts"]',
+        validation_status: 'passed',
+        validation_summary: 'Cycle removed',
+      });
+      stmts.addCandidateObservation.run({
+        cycle_observation_id: observationInfo.lastInsertRowid,
+        observation_version: 1,
+        fix_candidate_id: fixCandidateInfo.lastInsertRowid,
+        patch_id: patchInfo.lastInsertRowid,
+        strategy: 'import_type',
+        status: 'candidate',
+        planner_rank: 1,
+        promotion_eligible: 1,
+        summary: 'Convert imports to type-only',
+        classification: 'autofix_import_type',
+        confidence: 0.9,
+        upstreamability_score: 0.93,
+        reasons: '["Convert imports to type-only"]',
+        score_breakdown: '["base 0.97"]',
+        signals: '{"touchedFiles":1}',
+        plan: '{"kind":"import_type"}',
+        validation_status: 'passed',
+        validation_summary: 'Cycle removed',
+        validation_failure_category: null,
+      });
+      stmts.addReviewDecision.run({
+        patch_id: patchInfo.lastInsertRowid,
+        decision: 'approved',
+        notes: null,
+      });
+      stmts.upsertAcceptanceBenchmarkCase.run({
+        repository: 'strategy/repo',
+        local_path: replayDetailPath,
+        commit_sha: 'strategy123',
+        scan_id: scanInfo.lastInsertRowid as number,
+        cycle_id: cycleInfo.lastInsertRowid as number,
+        fix_candidate_id: fixCandidateInfo.lastInsertRowid as number,
+        patch_id: patchInfo.lastInsertRowid as number,
+        normalized_path: 'c.ts -> d.ts -> c.ts',
+        classification: 'autofix_import_type',
+        confidence: 0.9,
+        upstreamability_score: 0.93,
+        validation_status: 'passed',
+        validation_summary: 'Cycle removed',
+        review_status: 'approved',
+        touched_files: '["c.ts"]',
+        feature_vector: '{"cycleSize":2}',
+        planner_summary: 'Selected import_type',
+        planner_attempts: '[{"strategy":"import_type","status":"candidate"}]',
+        acceptability: 'accepted',
+        rejection_reason: null,
+        acceptability_note: null,
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/api/reports/strategy-performance' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().byRepositoryProfile).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            strategy: 'import_type',
+            packageManager: 'pnpm',
+            workspaceMode: 'workspace',
+            attempts: 1,
+            approvedReviews: 1,
+            passedValidations: 1,
+          }),
+        ]),
+      );
+      expect(response.json().acceptanceByStrategy).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            strategy: 'import_type',
+            classification: 'autofix_import_type',
+            totalCases: 1,
+            acceptedCases: 1,
+            acceptanceRate: 1,
+          }),
+        ]),
+      );
+    });
+
+    it('GET /api/reports/unsupported-clusters returns recurrent manual buckets', async () => {
+      const stmts = createStatements(testDb);
+      const repoInfo = stmts.addRepository.run({
+        owner: 'unsupported',
+        name: 'repo',
+        default_branch: null,
+        local_path: replayDetailPath,
+      });
+      const scanInfo = stmts.addScan.run({
+        repository_id: repoInfo.lastInsertRowid,
+        commit_sha: 'unsupported123',
+        status: 'completed',
+      });
+      const cycleInfo = stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'e.ts -> f.ts -> g.ts -> e.ts',
+        participating_files: JSON.stringify(['e.ts', 'f.ts', 'g.ts', 'e.ts']),
+        raw_payload: null,
+      });
+      stmts.addCycleObservation.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        scan_id: scanInfo.lastInsertRowid,
+        repository_id: repoInfo.lastInsertRowid,
+        observation_version: 1,
+        normalized_path: 'e.ts -> f.ts -> g.ts -> e.ts',
+        cycle_shape: 'multi_file',
+        cycle_size: 3,
+        cycle_signals: '{"explicitImportEdges":3}',
+        feature_vector: '{"hasBarrelFile":false,"packageManager":"npm","workspaceMode":"single-package"}',
+        repo_profile: '{"packageManager":"npm","workspaceMode":"single-package","validationCommandCount":1}',
+        planner_summary: 'No strategy cleared the safety filters.',
+        planner_attempts: '[]',
+        selected_strategy: null,
+        selected_classification: 'suggest_manual',
+        selected_score: null,
+        fallback_classification: 'suggest_manual',
+        fallback_confidence: 0.6,
+        fallback_reasons:
+          '["Barrel re-export graph is ambiguous or side-effectful, so a direct-import rewrite is not safe."]',
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/api/reports/unsupported-clusters' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            classification: 'suggest_manual',
+            cycleShape: 'multi_file',
+            cycleSize: 3,
+            count: 1,
+          }),
+        ]),
+      );
+    });
+  });
+
   describe('review decisions', () => {
     it('POST /api/patches/:patchId/review creates a decision', async () => {
       const stmts = createStatements(testDb);

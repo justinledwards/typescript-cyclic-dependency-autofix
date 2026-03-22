@@ -1,9 +1,10 @@
 import path from 'node:path';
-import type { CycleFeatureVector, PlannerRepositoryProfile } from './types.js';
+import type { CycleFeatureVector, CycleGraphSummary, PlannerRepositoryProfile } from './types.js';
 
 export function extractCycleFeatures(args: {
   uniqueFiles: string[];
   cycleShape: 'two_file' | 'multi_file';
+  graphSummary: CycleGraphSummary;
   cycleSignals: {
     explicitImportEdges: number;
     loadedFiles: number;
@@ -11,7 +12,7 @@ export function extractCycleFeatures(args: {
   };
   repositoryProfile?: PlannerRepositoryProfile;
 }): CycleFeatureVector {
-  const { uniqueFiles, cycleShape, cycleSignals, repositoryProfile } = args;
+  const { uniqueFiles, cycleShape, cycleSignals, graphSummary, repositoryProfile } = args;
 
   return {
     cycleSize: uniqueFiles.length,
@@ -26,5 +27,12 @@ export function extractCycleFeatures(args: {
     packageManager: repositoryProfile?.packageManager ?? 'unknown',
     workspaceMode: repositoryProfile?.workspaceMode ?? 'unknown',
     validationCommandCount: repositoryProfile?.validationCommandCount ?? 0,
+    barrelModuleCount: graphSummary.metrics.barrelModuleCount,
+    sideEffectModuleCount: graphSummary.metrics.sideEffectModuleCount,
+    exportEdgeCount: graphSummary.metrics.exportEdgeCount,
+    movableSymbolCount: graphSummary.metrics.movableSymbolCount,
+    symbolNodeCount: graphSummary.metrics.symbolNodeCount,
+    symbolEdgeCount: graphSummary.metrics.symbolEdgeCount,
+    symbolSccCount: graphSummary.metrics.symbolSccCount,
   };
 }

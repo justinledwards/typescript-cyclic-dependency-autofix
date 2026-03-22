@@ -10,6 +10,11 @@ import {
   type RepositoryStatus,
   type ReviewDecision,
 } from '../db/index.js';
+import {
+  getPatternReport,
+  getStrategyPerformanceReport,
+  getUnsupportedClustersReport,
+} from '../db/observationReports.js';
 
 interface FindingsFilters {
   repositoryId?: number;
@@ -443,6 +448,20 @@ export async function buildApp(database?: DatabaseType): Promise<FastifyInstance
 
     const rows = db.prepare(query).all(...params) as FindingsQueryRow[];
     return mapFindingRows(rows);
+  });
+
+  // ─── Reports ──────────────────────────────────────────────
+
+  fastify.get('/api/reports/patterns', async () => {
+    return getPatternReport(db);
+  });
+
+  fastify.get('/api/reports/strategy-performance', async () => {
+    return getStrategyPerformanceReport(db);
+  });
+
+  fastify.get('/api/reports/unsupported-clusters', async () => {
+    return getUnsupportedClustersReport(db);
   });
 
   // Combined findings view: cycles + fix candidates for a repository

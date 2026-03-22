@@ -123,6 +123,56 @@ export interface AcceptanceBenchmarkCaseDTO {
   updated_at: string;
 }
 
+export interface CycleObservationDTO {
+  id: number;
+  cycle_id: number;
+  scan_id: number;
+  repository_id: number;
+  observation_version: number;
+  normalized_path: string;
+  cycle_shape: string | null;
+  cycle_size: number;
+  cycle_signals: string | null;
+  feature_vector: string | null;
+  graph_summary: string | null;
+  repo_profile: string | null;
+  planner_summary: string | null;
+  planner_attempts: string;
+  selected_strategy: string | null;
+  selected_classification: string | null;
+  selected_score: number | null;
+  fallback_classification: string | null;
+  fallback_confidence: number | null;
+  fallback_reasons: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CandidateObservationDTO {
+  id: number;
+  cycle_observation_id: number;
+  observation_version: number;
+  fix_candidate_id: number | null;
+  patch_id: number | null;
+  strategy: string | null;
+  status: string;
+  planner_rank: number;
+  promotion_eligible: number;
+  summary: string | null;
+  classification: string | null;
+  confidence: number | null;
+  upstreamability_score: number | null;
+  reasons: string | null;
+  score_breakdown: string | null;
+  signals: string | null;
+  plan: string | null;
+  validation_status: string | null;
+  validation_summary: string | null;
+  validation_failure_category: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export type RepositoryStatus =
   | 'queued'
   | 'downloading'
@@ -187,6 +237,35 @@ const SCHEMA_SQL = `
     UNIQUE(scan_id, normalized_path)
   );
 
+  CREATE TABLE IF NOT EXISTS cycle_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cycle_id INTEGER NOT NULL,
+    scan_id INTEGER NOT NULL,
+    repository_id INTEGER NOT NULL,
+    observation_version INTEGER NOT NULL DEFAULT 1,
+    normalized_path TEXT NOT NULL,
+    cycle_shape TEXT,
+    cycle_size INTEGER NOT NULL DEFAULT 0,
+    cycle_signals TEXT, -- JSON string
+    feature_vector TEXT, -- JSON string
+    graph_summary TEXT, -- JSON string
+    repo_profile TEXT, -- JSON string
+    planner_summary TEXT,
+    planner_attempts TEXT NOT NULL, -- JSON string
+    selected_strategy TEXT,
+    selected_classification TEXT,
+    selected_score REAL,
+    fallback_classification TEXT,
+    fallback_confidence REAL,
+    fallback_reasons TEXT, -- JSON string
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (cycle_id) REFERENCES cycles(id),
+    FOREIGN KEY (scan_id) REFERENCES scans(id),
+    FOREIGN KEY (repository_id) REFERENCES repositories(id),
+    UNIQUE(cycle_id, observation_version)
+  );
+
   CREATE TABLE IF NOT EXISTS fix_candidates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     cycle_id INTEGER NOT NULL,
@@ -224,6 +303,34 @@ const SCHEMA_SQL = `
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (patch_id) REFERENCES patches(id),
     FOREIGN KEY (scan_id) REFERENCES scans(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS candidate_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cycle_observation_id INTEGER NOT NULL,
+    observation_version INTEGER NOT NULL DEFAULT 1,
+    fix_candidate_id INTEGER,
+    patch_id INTEGER,
+    strategy TEXT,
+    status TEXT NOT NULL,
+    planner_rank INTEGER NOT NULL DEFAULT 0,
+    promotion_eligible INTEGER NOT NULL DEFAULT 0,
+    summary TEXT,
+    classification TEXT,
+    confidence REAL,
+    upstreamability_score REAL,
+    reasons TEXT, -- JSON string
+    score_breakdown TEXT, -- JSON string
+    signals TEXT, -- JSON string
+    plan TEXT, -- JSON string
+    validation_status TEXT,
+    validation_summary TEXT,
+    validation_failure_category TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (cycle_observation_id) REFERENCES cycle_observations(id),
+    FOREIGN KEY (fix_candidate_id) REFERENCES fix_candidates(id),
+    FOREIGN KEY (patch_id) REFERENCES patches(id)
   );
 
   CREATE TABLE IF NOT EXISTS benchmark_cases (
@@ -288,12 +395,19 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_repositories_status ON repositories(status);
   CREATE INDEX IF NOT EXISTS idx_scans_repository_id_commit_sha ON scans(repository_id, commit_sha);
   CREATE INDEX IF NOT EXISTS idx_cycles_scan_id ON cycles(scan_id);
+  CREATE INDEX IF NOT EXISTS idx_cycle_observations_cycle_id ON cycle_observations(cycle_id);
+  CREATE INDEX IF NOT EXISTS idx_cycle_observations_repository_id ON cycle_observations(repository_id);
+  CREATE INDEX IF NOT EXISTS idx_cycle_observations_selected_classification ON cycle_observations(selected_classification);
   CREATE INDEX IF NOT EXISTS idx_fix_candidates_cycle_id ON fix_candidates(cycle_id);
   CREATE INDEX IF NOT EXISTS idx_fix_candidates_classification ON fix_candidates(classification);
   CREATE INDEX IF NOT EXISTS idx_fix_candidates_confidence ON fix_candidates(confidence);
   CREATE INDEX IF NOT EXISTS idx_patches_fix_candidate_id ON patches(fix_candidate_id);
   CREATE INDEX IF NOT EXISTS idx_patch_replays_patch_id ON patch_replays(patch_id);
   CREATE INDEX IF NOT EXISTS idx_patch_replays_scan_id ON patch_replays(scan_id);
+  CREATE INDEX IF NOT EXISTS idx_candidate_observations_cycle_observation_id ON candidate_observations(cycle_observation_id);
+  CREATE INDEX IF NOT EXISTS idx_candidate_observations_strategy ON candidate_observations(strategy);
+  CREATE INDEX IF NOT EXISTS idx_candidate_observations_status ON candidate_observations(status);
+  CREATE INDEX IF NOT EXISTS idx_candidate_observations_validation_failure_category ON candidate_observations(validation_failure_category);
   CREATE INDEX IF NOT EXISTS idx_benchmark_cases_repository ON benchmark_cases(repository);
   CREATE INDEX IF NOT EXISTS idx_benchmark_cases_commit_sha ON benchmark_cases(commit_sha);
   CREATE INDEX IF NOT EXISTS idx_benchmark_cases_source ON benchmark_cases(source);
@@ -321,6 +435,7 @@ export function createDatabase(dbPath?: string): DatabaseType {
 export function initSchema(database: DatabaseType): void {
   database.exec(SCHEMA_SQL);
   ensureFixCandidateSchema(database);
+  ensureObservationSchema(database);
 }
 
 interface TableColumnInfo {
@@ -371,6 +486,16 @@ function ensureFixCandidateSchema(database: DatabaseType): void {
   `);
 }
 
+function ensureObservationSchema(database: DatabaseType): void {
+  const cycleObservationColumns = new Set(
+    (database.prepare('PRAGMA table_info(cycle_observations)').all() as TableColumnInfo[]).map((column) => column.name),
+  );
+
+  if (!cycleObservationColumns.has('graph_summary')) {
+    database.exec('ALTER TABLE cycle_observations ADD COLUMN graph_summary TEXT');
+  }
+}
+
 /**
  * Create all prepared statements for a given database instance.
  */
@@ -401,6 +526,50 @@ export function createStatements(database: DatabaseType) {
       @signals
     )
   `);
+  const addCycleObservationStatement = database.prepare(`
+      INSERT INTO cycle_observations (
+        cycle_id,
+        scan_id,
+        repository_id,
+        observation_version,
+        normalized_path,
+        cycle_shape,
+        cycle_size,
+        cycle_signals,
+        feature_vector,
+        graph_summary,
+        repo_profile,
+        planner_summary,
+        planner_attempts,
+        selected_strategy,
+        selected_classification,
+        selected_score,
+        fallback_classification,
+        fallback_confidence,
+        fallback_reasons
+      )
+      VALUES (
+        @cycle_id,
+        @scan_id,
+        @repository_id,
+        @observation_version,
+        @normalized_path,
+        @cycle_shape,
+        @cycle_size,
+        @cycle_signals,
+        @feature_vector,
+        @graph_summary,
+        @repo_profile,
+        @planner_summary,
+        @planner_attempts,
+        @selected_strategy,
+        @selected_classification,
+        @selected_score,
+        @fallback_classification,
+        @fallback_confidence,
+        @fallback_reasons
+      )
+    `);
 
   return {
     // Repositories
@@ -450,6 +619,54 @@ export function createStatements(database: DatabaseType) {
     getCyclesByScanId: database.prepare(`
       SELECT * FROM cycles WHERE scan_id = ?
     `),
+    addCycleObservation: {
+      run: (params: {
+        cycle_id: number | bigint;
+        scan_id: number | bigint;
+        repository_id: number | bigint;
+        observation_version: number;
+        normalized_path: string;
+        cycle_shape?: string | null;
+        cycle_size?: number;
+        cycle_signals?: string | null;
+        feature_vector?: string | null;
+        graph_summary?: string | null;
+        repo_profile?: string | null;
+        planner_summary?: string | null;
+        planner_attempts: string;
+        selected_strategy?: string | null;
+        selected_classification?: string | null;
+        selected_score?: number | null;
+        fallback_classification?: string | null;
+        fallback_confidence?: number | null;
+        fallback_reasons?: string | null;
+      }) =>
+        addCycleObservationStatement.run({
+          cycle_shape: null,
+          cycle_size: 0,
+          cycle_signals: null,
+          feature_vector: null,
+          graph_summary: null,
+          repo_profile: null,
+          planner_summary: null,
+          selected_strategy: null,
+          selected_classification: null,
+          selected_score: null,
+          fallback_classification: null,
+          fallback_confidence: null,
+          fallback_reasons: null,
+          ...params,
+        }),
+    },
+    getCycleObservationsByScanId: database.prepare(`
+      SELECT * FROM cycle_observations WHERE scan_id = ? ORDER BY observation_version DESC, id DESC
+    `),
+    getLatestCycleObservationByCycleId: database.prepare(`
+      SELECT * FROM cycle_observations
+      WHERE cycle_id = ?
+      ORDER BY observation_version DESC, id DESC
+      LIMIT 1
+    `),
 
     // Fix Candidates
     addFixCandidate: {
@@ -490,6 +707,55 @@ export function createStatements(database: DatabaseType) {
     `),
     getPatchesByFixCandidateId: database.prepare(`
       SELECT * FROM patches WHERE fix_candidate_id = ?
+    `),
+    addCandidateObservation: database.prepare(`
+      INSERT INTO candidate_observations (
+        cycle_observation_id,
+        observation_version,
+        fix_candidate_id,
+        patch_id,
+        strategy,
+        status,
+        planner_rank,
+        promotion_eligible,
+        summary,
+        classification,
+        confidence,
+        upstreamability_score,
+        reasons,
+        score_breakdown,
+        signals,
+        plan,
+        validation_status,
+        validation_summary,
+        validation_failure_category
+      )
+      VALUES (
+        @cycle_observation_id,
+        @observation_version,
+        @fix_candidate_id,
+        @patch_id,
+        @strategy,
+        @status,
+        @planner_rank,
+        @promotion_eligible,
+        @summary,
+        @classification,
+        @confidence,
+        @upstreamability_score,
+        @reasons,
+        @score_breakdown,
+        @signals,
+        @plan,
+        @validation_status,
+        @validation_summary,
+        @validation_failure_category
+      )
+    `),
+    getCandidateObservationsByCycleObservationId: database.prepare(`
+      SELECT * FROM candidate_observations
+      WHERE cycle_observation_id = ?
+      ORDER BY planner_rank ASC, id ASC
     `),
 
     // Patch Replays
@@ -676,6 +942,18 @@ export const getCyclesByScanId = {
   all: (...args: Parameters<ReturnType<typeof createStatements>['getCyclesByScanId']['all']>) =>
     getStatements().getCyclesByScanId.all(...args),
 };
+export const addCycleObservation = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['addCycleObservation']['run']>) =>
+    getStatements().addCycleObservation.run(...args),
+};
+export const getCycleObservationsByScanId = {
+  all: (...args: Parameters<ReturnType<typeof createStatements>['getCycleObservationsByScanId']['all']>) =>
+    getStatements().getCycleObservationsByScanId.all(...args),
+};
+export const getLatestCycleObservationByCycleId = {
+  get: (...args: Parameters<ReturnType<typeof createStatements>['getLatestCycleObservationByCycleId']['get']>) =>
+    getStatements().getLatestCycleObservationByCycleId.get(...args),
+};
 export const addFixCandidate = {
   run: (...args: Parameters<ReturnType<typeof createStatements>['addFixCandidate']['run']>) =>
     getStatements().addFixCandidate.run(...args),
@@ -695,6 +973,15 @@ export const getPatch = {
 export const getPatchesByFixCandidateId = {
   all: (...args: Parameters<ReturnType<typeof createStatements>['getPatchesByFixCandidateId']['all']>) =>
     getStatements().getPatchesByFixCandidateId.all(...args),
+};
+export const addCandidateObservation = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['addCandidateObservation']['run']>) =>
+    getStatements().addCandidateObservation.run(...args),
+};
+export const getCandidateObservationsByCycleObservationId = {
+  all: (
+    ...args: Parameters<ReturnType<typeof createStatements>['getCandidateObservationsByCycleObservationId']['all']>
+  ) => getStatements().getCandidateObservationsByCycleObservationId.all(...args),
 };
 export const addPatchReplay = {
   run: (...args: Parameters<ReturnType<typeof createStatements>['addPatchReplay']['run']>) =>

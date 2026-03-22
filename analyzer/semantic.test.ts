@@ -215,6 +215,12 @@ describe('SemanticAnalyzer', () => {
       selectedStrategy: 'direct_import',
       selectedClassification: 'autofix_direct_import',
       selectedScore: 0.9,
+      graphSummary: {
+        metrics: {
+          barrelModuleCount: 1,
+          exportEdgeCount: 2,
+        },
+      },
     });
     expect(result.plan).toEqual({
       kind: 'direct_import',

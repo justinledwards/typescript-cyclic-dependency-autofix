@@ -3,11 +3,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   type AcceptanceBenchmarkCaseDTO,
   type BenchmarkCaseDTO,
+  type CandidateObservationDTO,
   type CycleDTO,
+  type CycleObservationDTO,
   createDatabase,
   createStatements,
   addBenchmarkCase as defaultAddBenchmarkCase,
+  addCandidateObservation as defaultAddCandidateObservation,
   addCycle as defaultAddCycle,
+  addCycleObservation as defaultAddCycleObservation,
   addFixCandidate as defaultAddFixCandidate,
   addPatch as defaultAddPatch,
   addPatchReplay as defaultAddPatchReplay,
@@ -20,8 +24,11 @@ import {
   getAllRepositories as defaultGetAllRepositories,
   getBenchmarkCases as defaultGetBenchmarkCases,
   getBenchmarkCasesByRepository as defaultGetBenchmarkCasesByRepository,
+  getCandidateObservationsByCycleObservationId as defaultGetCandidateObservationsByCycleObservationId,
+  getCycleObservationsByScanId as defaultGetCycleObservationsByScanId,
   getCyclesByScanId as defaultGetCyclesByScanId,
   getFixCandidatesByCycleId as defaultGetFixCandidatesByCycleId,
+  getLatestCycleObservationByCycleId as defaultGetLatestCycleObservationByCycleId,
   getPatch as defaultGetPatch,
   getPatchesByFixCandidateId as defaultGetPatchesByFixCandidateId,
   getPatchReplayByPatchId as defaultGetPatchReplayByPatchId,
@@ -81,8 +88,10 @@ describe('db module', () => {
       expect(tableNames).toContain('repositories');
       expect(tableNames).toContain('scans');
       expect(tableNames).toContain('cycles');
+      expect(tableNames).toContain('cycle_observations');
       expect(tableNames).toContain('fix_candidates');
       expect(tableNames).toContain('patches');
+      expect(tableNames).toContain('candidate_observations');
       expect(tableNames).toContain('patch_replays');
       expect(tableNames).toContain('benchmark_cases');
       expect(tableNames).toContain('review_decisions');
@@ -99,12 +108,19 @@ describe('db module', () => {
       expect(indexNames).toContain('idx_repositories_status');
       expect(indexNames).toContain('idx_scans_repository_id_commit_sha');
       expect(indexNames).toContain('idx_cycles_scan_id');
+      expect(indexNames).toContain('idx_cycle_observations_cycle_id');
+      expect(indexNames).toContain('idx_cycle_observations_repository_id');
+      expect(indexNames).toContain('idx_cycle_observations_selected_classification');
       expect(indexNames).toContain('idx_fix_candidates_cycle_id');
       expect(indexNames).toContain('idx_fix_candidates_classification');
       expect(indexNames).toContain('idx_fix_candidates_confidence');
       expect(indexNames).toContain('idx_patches_fix_candidate_id');
       expect(indexNames).toContain('idx_patch_replays_patch_id');
       expect(indexNames).toContain('idx_patch_replays_scan_id');
+      expect(indexNames).toContain('idx_candidate_observations_cycle_observation_id');
+      expect(indexNames).toContain('idx_candidate_observations_strategy');
+      expect(indexNames).toContain('idx_candidate_observations_status');
+      expect(indexNames).toContain('idx_candidate_observations_validation_failure_category');
       expect(indexNames).toContain('idx_benchmark_cases_repository');
       expect(indexNames).toContain('idx_benchmark_cases_commit_sha');
       expect(indexNames).toContain('idx_benchmark_cases_source');
@@ -760,6 +776,152 @@ describe('db module', () => {
     });
   });
 
+  describe('observations', () => {
+    it('adds and retrieves cycle observations', () => {
+      const repoInfo = stmts.addRepository.run({
+        owner: 'obs-test',
+        name: 'repo',
+        default_branch: null,
+        local_path: TEST_LOCAL_REPO_PATH,
+      });
+      const scanInfo = stmts.addScan.run({
+        repository_id: repoInfo.lastInsertRowid,
+        commit_sha: 'obs123',
+        status: 'completed',
+      });
+      const cycleInfo = stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        participating_files: '["a.ts","b.ts","a.ts"]',
+        raw_payload: null,
+      });
+
+      const insert = stmts.addCycleObservation.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        scan_id: scanInfo.lastInsertRowid,
+        repository_id: repoInfo.lastInsertRowid,
+        observation_version: 1,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        cycle_shape: 'two_file',
+        cycle_size: 2,
+        cycle_signals: '{"explicitImportEdges":2}',
+        feature_vector: '{"cycleSize":2,"packageManager":"pnpm"}',
+        graph_summary: '{"metrics":{"symbolSccCount":1,"movableSymbolCount":2}}',
+        repo_profile: '{"packageManager":"pnpm","workspaceMode":"workspace","validationCommandCount":2}',
+        planner_summary: 'Selected import_type after ranking two candidates.',
+        planner_attempts: '[{"strategy":"import_type","status":"candidate"}]',
+        selected_strategy: 'import_type',
+        selected_classification: 'autofix_import_type',
+        selected_score: 0.94,
+        fallback_classification: 'autofix_import_type',
+        fallback_confidence: 0.9,
+        fallback_reasons: '["Cycle can be resolved with import type"]',
+      });
+
+      const latest = stmts.getLatestCycleObservationByCycleId.get(cycleInfo.lastInsertRowid) as CycleObservationDTO;
+      const scanRows = stmts.getCycleObservationsByScanId.all(scanInfo.lastInsertRowid) as CycleObservationDTO[];
+      expect(insert.lastInsertRowid).toBeDefined();
+      expect(latest.selected_strategy).toBe('import_type');
+      expect(latest.graph_summary).toContain('"symbolSccCount":1');
+      expect(latest.repo_profile).toContain('"packageManager":"pnpm"');
+      expect(scanRows).toHaveLength(1);
+    });
+
+    it('adds and retrieves candidate observations', () => {
+      const repoInfo = stmts.addRepository.run({
+        owner: 'obs-test',
+        name: 'repo',
+        default_branch: null,
+        local_path: TEST_LOCAL_REPO_PATH,
+      });
+      const scanInfo = stmts.addScan.run({
+        repository_id: repoInfo.lastInsertRowid,
+        commit_sha: 'obs123',
+        status: 'completed',
+      });
+      const cycleInfo = stmts.addCycle.run({
+        scan_id: scanInfo.lastInsertRowid,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        participating_files: '["a.ts","b.ts","a.ts"]',
+        raw_payload: null,
+      });
+      const cycleObservationInfo = stmts.addCycleObservation.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        scan_id: scanInfo.lastInsertRowid,
+        repository_id: repoInfo.lastInsertRowid,
+        observation_version: 1,
+        normalized_path: 'a.ts -> b.ts -> a.ts',
+        cycle_shape: 'two_file',
+        cycle_size: 2,
+        cycle_signals: '{"explicitImportEdges":2}',
+        feature_vector: '{"cycleSize":2}',
+        repo_profile: '{"packageManager":"pnpm"}',
+        planner_summary: 'Selected import_type',
+        planner_attempts: '[]',
+        selected_strategy: 'import_type',
+        selected_classification: 'autofix_import_type',
+        selected_score: 0.94,
+        fallback_classification: 'autofix_import_type',
+        fallback_confidence: 0.9,
+        fallback_reasons: '[]',
+      });
+      const fixCandidateInfo = stmts.addFixCandidate.run({
+        cycle_id: cycleInfo.lastInsertRowid,
+        strategy: 'import_type',
+        planner_rank: 1,
+        classification: 'autofix_import_type',
+        confidence: 0.9,
+        upstreamability_score: 0.94,
+        reasons: '["Cycle can be resolved with import type"]',
+        summary: 'Convert import to type-only',
+        score_breakdown: '["base 0.97"]',
+        signals: '{"touchedFiles":1}',
+      });
+      const patchInfo = stmts.addPatch.run({
+        fix_candidate_id: fixCandidateInfo.lastInsertRowid,
+        patch_text: 'diff content',
+        touched_files: '["a.ts"]',
+        validation_status: 'failed',
+        validation_summary: 'Typecheck failed',
+      });
+
+      stmts.addCandidateObservation.run({
+        cycle_observation_id: cycleObservationInfo.lastInsertRowid,
+        observation_version: 1,
+        fix_candidate_id: fixCandidateInfo.lastInsertRowid,
+        patch_id: patchInfo.lastInsertRowid,
+        strategy: 'import_type',
+        status: 'candidate',
+        planner_rank: 1,
+        promotion_eligible: 1,
+        summary: 'Convert import to type-only',
+        classification: 'autofix_import_type',
+        confidence: 0.9,
+        upstreamability_score: 0.94,
+        reasons: '["Cycle can be resolved with import type"]',
+        score_breakdown: '["base 0.97"]',
+        signals: '{"touchedFiles":1}',
+        plan: '{"kind":"import_type"}',
+        validation_status: 'failed',
+        validation_summary: 'Typecheck failed',
+        validation_failure_category: 'typecheck_failed',
+      });
+
+      const rows = stmts.getCandidateObservationsByCycleObservationId.all(
+        cycleObservationInfo.lastInsertRowid,
+      ) as CandidateObservationDTO[];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        strategy: 'import_type',
+        status: 'candidate',
+        planner_rank: 1,
+        promotion_eligible: 1,
+        validation_status: 'failed',
+        validation_failure_category: 'typecheck_failed',
+      });
+    });
+  });
+
   describe('acceptance_benchmark_cases', () => {
     it('upserts and retrieves acceptance benchmark cases', () => {
       const insert = stmts.upsertAcceptanceBenchmarkCase.run({
@@ -1015,11 +1177,16 @@ describe('default production exports', () => {
     expect(defaultUpdateScanStatus).toBeDefined();
     expect(defaultAddCycle).toBeDefined();
     expect(defaultGetCyclesByScanId).toBeDefined();
+    expect(defaultAddCycleObservation).toBeDefined();
+    expect(defaultGetCycleObservationsByScanId).toBeDefined();
+    expect(defaultGetLatestCycleObservationByCycleId).toBeDefined();
     expect(defaultAddFixCandidate).toBeDefined();
     expect(defaultGetFixCandidatesByCycleId).toBeDefined();
     expect(defaultAddPatch).toBeDefined();
     expect(defaultGetPatch).toBeDefined();
     expect(defaultGetPatchesByFixCandidateId).toBeDefined();
+    expect(defaultAddCandidateObservation).toBeDefined();
+    expect(defaultGetCandidateObservationsByCycleObservationId).toBeDefined();
     expect(defaultAddPatchReplay).toBeDefined();
     expect(defaultGetPatchReplayByPatchId).toBeDefined();
     expect(defaultAddBenchmarkCase).toBeDefined();

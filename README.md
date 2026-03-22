@@ -1,115 +1,131 @@
 # Circular Dependency Autofix Bot
 
-Scans JavaScript and TypeScript repositories for circular dependencies, extracts planner features, ranks safe rewrite strategies, generates candidate patches, validates them, and provides a review/PR workflow for the cases worth sending upstream.
+This project is evolving from a conservative autofix bot into a data-first cycle analysis platform for JavaScript and TypeScript repositories.
+
+The core goal is no longer just "find a few safe fixes." The goal is to collect high-quality evidence about real circular dependency problems, identify recurring fix patterns, and automate the patterns that repeatedly validate and survive review.
+
+## Primary Goals
+
+- Turn every scan into reusable training and evaluation data, including unsupported cases.
+- Build a graph-aware planner that reasons about symbol dependencies instead of relying only on file-level heuristics.
+- Rank candidates using historical evidence from benchmarks, validation failures, and human review outcomes.
+- Keep correctness rule-driven and validation-driven, while using data and ML only to rank safe candidates.
+- Grow from narrow, trusted fixes into broader automation only when repeated real-repo evidence supports it.
+
+## Target Workflow
+
+The target product workflow is:
+
+`detect -> extract features -> rank against historical evidence -> generate candidates -> validate -> review -> learn`
+
+Each stage has a distinct job:
+
+1. `detect`
+   - find normalized circular dependency issues in real repositories
+2. `extract features`
+   - compute cycle shape, repo profile, import/export structure, side-effect risk, and graph metadata
+3. `rank against historical evidence`
+   - compare candidate strategies against benchmark cases, validation history, and review outcomes
+4. `generate candidates`
+   - produce multiple possible rewrites instead of collapsing too early to one heuristic answer
+5. `validate`
+   - confirm the target cycle is gone, no new cycles were introduced, and repo-native validation or `tsc` passes
+6. `review`
+   - expose the evidence, patch, validation results, and ranking rationale to a human reviewer
+7. `learn`
+   - feed review outcomes, validation failures, and benchmark labels back into future ranking
+
+## Data-First Direction
+
+The project now treats data capture as a first-class product surface.
+
+Every cycle should eventually produce reusable observations such as:
+
+- canonical cycle identity
+- participating files and normalized shape
+- repo profile and validation environment
+- extracted feature vectors
+- strategy attempts, scores, and ranking
+- generated patches and replay bundles
+- validation outcomes and failure categories
+- review decisions and acceptance labels
+
+The long-term value of the system comes from this loop. Even unsupported cycles should become analyzable examples rather than dead ends.
+
+## Strategy Roadmap
+
+### Current strategy families
+
+- `autofix_import_type`
+- `autofix_direct_import`
+- `autofix_extract_shared`
+- `autofix_host_state_update`
+
+### Next strategy families
+
+- `state_setter_inline`
+- `type_value_split`
+- `slice_extract_shared_v2`
+- `barrel_export_graph_rewrite_v2`
+- `internal_entrypoint_pattern` as manual-only until benchmark evidence supports promotion
+
+## Graph, Search, and ML Roadmap
+
+The medium-term technical direction is explicit:
+
+- build a reusable symbol-level dependency graph layer
+- compute symbol-level SCCs, import/export edges, re-export resolution, and side-effect risk
+- search over candidate graph edits instead of only applying fixed heuristics
+- use weighted edge scoring, def-use slicing, and clustering to find the cheapest safe cycle-breaking rewrites
+- export model-ready datasets and add learned ranking later, only for ranking already-safe candidates
+
+ML is not the correctness mechanism. Validation and structural safety checks remain the correctness boundary.
+
+## Repository Layout
+
+```text
+├── src/                 # TanStack Start frontend and review UI
+├── backend/             # Fastify API server
+├── analyzer/            # Cycle detection, feature extraction, planner logic
+├── codemod/             # Patch generation and rewrite logic
+├── cli/                 # Scan, retry, export, and reporting commands
+├── db/                  # SQLite schema and data access layer
+├── worktrees/           # Local repo clones and isolated workspaces
+├── PLAN.md              # Source-of-truth roadmap for the data-first platform
+├── DEPS.md              # Dependency rationale and planned technical additions
+└── AGENTS.md            # Implementation guidance for contributors and coding agents
+```
 
 ## Quick Start
 
 ```bash
-# Install mise (if not already installed)
-brew install mise   # macOS
-# or see https://mise.jdx.dev/getting-started.html
-
-# Install pinned tools
+brew install mise
 mise install
-
-# Install dependencies
 pnpm install
-
-# Start dev servers (frontend + backend)
 pnpm run dev
 ```
 
-- **Frontend:** http://localhost:3000 (TanStack Start)
-- **Backend API:** http://localhost:3001/api (Fastify)
+- Frontend: `http://localhost:3000`
+- Backend API: `http://localhost:3001/api`
 
-## Architecture
-
-```
-├── src/                         # TanStack Start frontend and review UI
-│   ├── routes/                  # Repository, cycle, findings, and about routes
-│   ├── components/              # Shared UI shell
-│   ├── lib/                     # API client helpers
-│   └── routeTree.gen.ts         # Generated route tree
-├── backend/                     # Fastify API server
-│   └── server.ts                # REST endpoints for scans, cycles, patches, and reviews
-├── analyzer/                    # Detection, normalization, feature extraction, and strategy ranking
-│   ├── analyzer.ts              # dependency-cruiser entrypoint and repo/evidence wiring
-│   ├── cycleNormalization.ts    # Canonical cycle identity helpers
-│   └── semantic/                # Feature extraction, evidence scoring, planner output
-├── cli/                         # CLI orchestration, validation, benchmarking, and PR automation
-│   ├── scanner/                 # Target resolution, persistence, and replay bundle generation
-│   ├── createPullRequest/       # Scratch checkout, snapshot replay, and PR rendering
-│   ├── acceptanceBenchmark.ts   # Acceptance benchmark snapshotting and annotations
-│   ├── benchmarkCorpus.ts       # Corpus batch mining
-│   ├── benchmarkMiner.ts        # Local git-history miner
-│   ├── repoProfile.ts           # Repo-native validation command inference
-│   ├── smoke.ts                 # Fixture-driven real-repo smoke suite
-│   ├── validation.ts            # Graph + repo-native validation
-│   └── index.ts                 # CLI entrypoint
-├── codemod/                     # Patch generation and file snapshot export
-│   └── generatePatch.ts
-├── db/                          # SQLite schema, DTOs, prepared statements, and metrics inputs
-│   └── index.ts
-├── benchmarks/                  # Real-repo corpus definitions and notes
-├── smoke.fixtures.json          # Default smoke suite fixture list
-└── worktrees/                   # Temp clones / scratch checkouts (gitignored)
-```
-
-## CLI Commands
+## Current CLI Surface
 
 ```bash
-pnpm run scan <repo-url-or-path>                 # Scan a repository and persist cycles/candidates
-pnpm run explain <repo-url-or-path>              # Print planner output for each detected cycle
-pnpm run profile:repo <repo-path>                # Infer repo-native validation commands
-pnpm run smoke [fixturesPath]                    # Run the real-repo smoke suite
-pnpm run benchmark:acceptance                    # Snapshot acceptance benchmark cases from corpus scans
-pnpm run mine:corpus                             # Mine historical benchmark cases from the repo corpus
-pnpm run mine:repo-history <repo-path>           # Mine benchmark cases from one local checkout
-pnpm run create:pr <patchId> --issue <number>   # Replay a stored patch and open a PR
-pnpm run export:patches [outputDir]              # Export approved or PR-candidate patch files
+pnpm run scan <repo-url-or-path>
+pnpm run scan:all
+pnpm run retry:failed
+pnpm run export:patches
 ```
 
-`scan:all` and `retry:failed` are still placeholders; the main operational paths are the commands above.
+Planned additions include rescoring, reporting, and corpus-analysis commands that make the data loop directly inspectable.
 
-## How It Works
+## Engineering Principles
 
-1. **Resolve a target** from a local path or remote repository URL and capture repository metadata.
-2. **Detect cycles** with `dependency-cruiser`, then normalize rotated equivalents into a canonical cycle identity.
-3. **Extract planner features** for each cycle and evaluate supported strategies:
-   - `autofix_import_type`
-   - `autofix_direct_import`
-   - `autofix_extract_shared`
-   - `autofix_host_state_update`
-4. **Rank candidates** with planner heuristics plus historical evidence from benchmark cases, validation failures, and review outcomes.
-5. **Generate patches** for promoted candidates, including replayable file snapshots for deterministic PR creation.
-6. **Validate rewrites** by replaying the patch in a scratch checkout, re-running analysis, failing on persisted or newly introduced cycles, and running repo-native validation commands plus `tsc --noEmit` when available.
-7. **Review or benchmark** results through the UI, acceptance benchmark workflow, or smoke suite.
-8. **Create PRs** only for candidates that clear the upstreamability threshold.
-
-## Safe Auto-Fix Scope (v1)
-
-The tool is still intentionally conservative. It targets narrow cycle shapes where the rewrite can be explained and validated mechanically:
-
-- Primarily two-file cycles, with a narrow barrel/direct-import exception
-- Files are `.js`, `.jsx`, `.ts`, or `.tsx`
-- Candidate declarations are simple top-level functions, consts, type aliases, or interfaces
-- No default exports or class extraction
-- No unsafe module-scope side effects
-- No extraction that would recreate the cycle in the shared file
-- No PR creation unless the candidate clears promotion and validation thresholds
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Runtime | Node.js 25 (via mise) |
-| Package Manager | pnpm 10 (via mise) |
-| Frontend | TanStack Start + React 19 + Tailwind CSS 4 |
-| Backend | Fastify 5 |
-| Database | SQLite (better-sqlite3) |
-| Analysis | dependency-cruiser + ts-morph |
-| Codemods | ts-morph + recast-friendly patch export |
-| Testing | Vitest |
+- Prefer explainable ranking over opaque automation.
+- Keep detection, feature extraction, ranking, rewriting, validation, and review separated.
+- Persist enough information to replay, rescore, and compare decisions later.
+- Default to no patch when evidence is weak.
+- Optimize for globally useful patterns, not repo-specific hacks.
 
 ## License
 

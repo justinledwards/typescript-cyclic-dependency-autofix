@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  type ExportDeclaration,
   type FunctionDeclaration,
   type Identifier,
   type ImportDeclaration,
@@ -13,6 +12,7 @@ import {
 import type { Classification } from '../../db/index.js';
 import { createEmptyHistoricalEvidenceSnapshot } from './evidence.js';
 import { extractCycleFeatures } from './features.js';
+import { buildCycleGraph, findDirectImportPlanFromGraph } from './graph.js';
 import {
   applyHistoricalEvidence,
   createNotApplicableAttempt,
@@ -27,8 +27,6 @@ import {
 import type {
   CyclePlanningContext,
   CyclePlanningResult,
-  DirectImportFixPlan,
-  DirectImportSearchResult,
   ExtractSharedFixPlan,
   HistoricalEvidenceSnapshot,
   HostStateUpdateFixPlan,
@@ -100,6 +98,7 @@ export class SemanticAnalyzer {
       cycleShape: context.cycleShape,
       cycleSignals: context.cycleSignals,
       features: context.features,
+      graphSummary: context.graphSummary,
       fallbackClassification: selectedAttempt?.classification ?? fallbackDecision.classification,
       fallbackConfidence: selectedAttempt?.confidence ?? fallbackDecision.confidence,
       fallbackReasons: selectedAttempt?.reasons ?? fallbackDecision.reasons,
@@ -125,10 +124,21 @@ export class SemanticAnalyzer {
     const sourceFileB = fileB ? sourceFiles.get(fileB) : undefined;
     const importsAToB = sourceFileA && fileB ? this.findImportsTo(sourceFileA, fileB) : [];
     const importsBToA = sourceFileB && fileA ? this.findImportsTo(sourceFileB, fileA) : [];
+    const graphSummary = buildCycleGraph({
+      cycleFiles: uniqueFiles,
+      isWithinRepo: (absolutePath) => this.isWithinRepo(absolutePath),
+      loadSourceFile: (repoRelativePath) => this.loadCycleSourceFile(repoRelativePath),
+      resolveModulePath: (filePath, moduleSpecifier) =>
+        this.resolveModulePath(path.join(this.repoPath, filePath), moduleSpecifier),
+      toRepoRelativePath: (absolutePath) => this.toRepoRelativePath(absolutePath),
+    });
     const cycleSignals = {
       explicitImportEdges: importsAToB.length + importsBToA.length,
       loadedFiles: [...sourceFiles.values()].filter(Boolean).length,
       missingFiles: [...sourceFiles.values()].filter((sourceFile) => !sourceFile).length,
+      barrelModules: graphSummary.metrics.barrelModuleCount,
+      sideEffectModules: graphSummary.metrics.sideEffectModuleCount,
+      symbolSccs: graphSummary.metrics.symbolSccCount,
     };
 
     return {
@@ -141,9 +151,11 @@ export class SemanticAnalyzer {
       cycleSignals,
       repositoryProfile: this.plannerOptions.repositoryProfile,
       historicalEvidence: this.plannerOptions.historicalEvidence ?? createEmptyHistoricalEvidenceSnapshot(),
+      graphSummary,
       features: extractCycleFeatures({
         uniqueFiles,
         cycleShape,
+        graphSummary,
         cycleSignals,
         repositoryProfile: this.plannerOptions.repositoryProfile,
       }),
@@ -191,7 +203,7 @@ export class SemanticAnalyzer {
             cycleSize: context.uniqueFiles.length,
           },
         }),
-        evaluate: (context) => this.evaluateDirectImportAttempt(context.uniqueFiles),
+        evaluate: (context) => this.evaluateDirectImportAttempt(context.uniqueFiles, context.graphSummary),
       },
       {
         strategy: 'host_state_update',
@@ -433,10 +445,13 @@ export class SemanticAnalyzer {
     };
   }
 
-  private evaluateDirectImportAttempt(cycleFiles: string[]): StrategyAttempt {
-    const directImportResult = this.buildDirectImportPlan(cycleFiles);
+  private evaluateDirectImportAttempt(
+    cycleFiles: string[],
+    graphSummary: CyclePlanningContext['graphSummary'],
+  ): StrategyAttempt {
+    const directImportResult = findDirectImportPlanFromGraph(graphSummary, cycleFiles);
     if (!directImportResult.plan || directImportResult.plan.length === 0) {
-      if (directImportResult.sawBarrelScenario) {
+      if (directImportResult.ambiguousResolution) {
         return createRejectedAttempt(
           'direct_import',
           'Barrel re-export graph is ambiguous or side-effectful.',
@@ -968,278 +983,6 @@ export class SemanticAnalyzer {
 
   private normalizeRepoRelativePath(filePath: string): string {
     return filePath.split(path.sep).join('/');
-  }
-
-  private buildDirectImportPlan(cycleFiles: string[]): DirectImportSearchResult {
-    let sawBarrelScenario = false;
-
-    for (const sourceFilePath of cycleFiles) {
-      const searchResult = this.findDirectImportCandidateForSource(sourceFilePath, cycleFiles);
-      sawBarrelScenario ||= searchResult.sawBarrelScenario;
-      if (searchResult.plan) {
-        return searchResult;
-      }
-    }
-
-    return {
-      sawBarrelScenario,
-    };
-  }
-
-  private findDirectImportCandidateForSource(sourceFilePath: string, cycleFiles: string[]): DirectImportSearchResult {
-    const sourceFile = this.loadCycleSourceFile(sourceFilePath);
-    if (!sourceFile) {
-      return { sawBarrelScenario: false };
-    }
-
-    let sawBarrelScenario = false;
-
-    for (const barrelFilePath of cycleFiles) {
-      if (barrelFilePath === sourceFilePath) {
-        continue;
-      }
-
-      const barrelFile = this.loadCycleSourceFile(barrelFilePath);
-      if (!barrelFile || !this.hasReExportDeclarations(barrelFile)) {
-        continue;
-      }
-
-      const importDeclarations = this.findImportsTo(sourceFile, barrelFilePath);
-      if (importDeclarations.length === 0) {
-        continue;
-      }
-
-      sawBarrelScenario = true;
-
-      const candidate = this.findDirectImportCandidateForDeclarations(
-        sourceFilePath,
-        barrelFilePath,
-        barrelFile,
-        importDeclarations,
-        cycleFiles,
-      );
-      if (candidate) {
-        return {
-          sawBarrelScenario: true,
-          plan: [candidate],
-        };
-      }
-    }
-
-    return { sawBarrelScenario };
-  }
-
-  private findDirectImportCandidateForDeclarations(
-    sourceFilePath: string,
-    barrelFilePath: string,
-    barrelFile: SourceFile,
-    importDeclarations: ImportDeclaration[],
-    cycleFiles: string[],
-  ): DirectImportFixPlan['imports'][number] | undefined {
-    for (const importDecl of importDeclarations) {
-      const candidate = this.tryBuildDirectImportCandidate(
-        sourceFilePath,
-        barrelFilePath,
-        barrelFile,
-        importDecl,
-        cycleFiles,
-      );
-      if (candidate) {
-        return candidate;
-      }
-    }
-
-    return undefined;
-  }
-
-  private tryBuildDirectImportCandidate(
-    sourceFilePath: string,
-    barrelFilePath: string,
-    barrelFile: SourceFile,
-    importDecl: ImportDeclaration,
-    cycleFiles: string[],
-  ): DirectImportFixPlan['imports'][number] | undefined {
-    if (importDecl.getDefaultImport() || importDecl.getNamespaceImport() || importDecl.getNamedImports().length === 0) {
-      return undefined;
-    }
-
-    const importedNames = importDecl.getNamedImports().map((namedImport) => namedImport.getName());
-    const resolution = this.resolveDirectImportTarget(barrelFile, importedNames);
-    if (!resolution) {
-      return undefined;
-    }
-
-    if (!this.isWithinRepo(resolution.targetFile)) {
-      return undefined;
-    }
-
-    const targetFilePath = this.toRepoRelativePath(resolution.targetFile);
-    if (targetFilePath === sourceFilePath || targetFilePath === barrelFilePath) {
-      return undefined;
-    }
-
-    const targetSourceFile = this.loadCycleSourceFile(targetFilePath);
-    if (targetSourceFile && this.hasDependenciesOnFiles(targetSourceFile, cycleFiles)) {
-      return undefined;
-    }
-
-    return {
-      sourceFile: sourceFilePath,
-      barrelFile: barrelFilePath,
-      targetFile: targetFilePath,
-      symbols: importedNames,
-    };
-  }
-
-  private resolveDirectImportTarget(
-    barrelFile: SourceFile,
-    importedNames: string[],
-    visited = new Set<string>(),
-  ): { targetFile: string; symbols: string[] } | undefined {
-    if (!this.isPureBarrelModule(barrelFile)) {
-      return undefined;
-    }
-
-    let resolvedTarget: string | undefined;
-
-    for (const importedName of importedNames) {
-      const resolved = this.resolveExportedSymbol(barrelFile, importedName, new Set(visited));
-      if (!resolved) {
-        return undefined;
-      }
-
-      if (resolvedTarget && resolvedTarget !== resolved.targetFile) {
-        return undefined;
-      }
-
-      resolvedTarget = resolved.targetFile;
-    }
-
-    return resolvedTarget
-      ? {
-          targetFile: resolvedTarget,
-          symbols: importedNames,
-        }
-      : undefined;
-  }
-
-  private resolveExportedSymbol(
-    sourceFile: SourceFile,
-    exportedName: string,
-    visited: Set<string>,
-  ): { targetFile: string } | undefined {
-    const filePath = sourceFile.getFilePath();
-    const visitKey = `${filePath}::${exportedName}`;
-    if (visited.has(visitKey)) {
-      return undefined;
-    }
-    visited.add(visitKey);
-
-    if (!this.hasReExportDeclarations(sourceFile)) {
-      return this.resolveLocalExportTarget(sourceFile, exportedName);
-    }
-
-    if (!this.isPureBarrelModule(sourceFile)) {
-      return undefined;
-    }
-
-    return this.resolveExportedSymbolFromReExports(sourceFile, exportedName, visited);
-  }
-
-  private resolveLocalExportTarget(sourceFile: SourceFile, exportedName: string): { targetFile: string } | undefined {
-    return sourceFile.getExportedDeclarations().has(exportedName)
-      ? { targetFile: sourceFile.getFilePath() }
-      : undefined;
-  }
-
-  private resolveExportedSymbolFromReExports(
-    sourceFile: SourceFile,
-    exportedName: string,
-    visited: Set<string>,
-  ): { targetFile: string } | undefined {
-    let resolvedTarget: string | undefined;
-
-    for (const exportDecl of sourceFile.getExportDeclarations()) {
-      const resolved = this.resolveExportDeclarationTarget(exportDecl, exportedName, visited);
-      if (!resolved) {
-        continue;
-      }
-
-      if (resolvedTarget && resolvedTarget !== resolved.targetFile) {
-        return undefined;
-      }
-
-      resolvedTarget = resolved.targetFile;
-    }
-
-    return resolvedTarget ? { targetFile: resolvedTarget } : undefined;
-  }
-
-  private resolveExportDeclarationTarget(
-    exportDecl: ExportDeclaration,
-    exportedName: string,
-    visited: Set<string>,
-  ): { targetFile: string } | undefined {
-    const moduleSpecifier = exportDecl.getModuleSpecifierValue();
-    if (!moduleSpecifier || exportDecl.getNamespaceExport()) {
-      return undefined;
-    }
-
-    const namedExports = exportDecl.getNamedExports();
-    if (namedExports.length === 0) {
-      return undefined;
-    }
-
-    const matchingExport = namedExports.find(
-      (namedExport) => this.getExportedSpecifierName(namedExport) === exportedName,
-    );
-    if (!matchingExport) {
-      return undefined;
-    }
-
-    const resolvedPath = this.resolveModulePath(exportDecl.getSourceFile().getFilePath(), moduleSpecifier);
-    if (!resolvedPath || !this.isWithinRepo(resolvedPath)) {
-      return undefined;
-    }
-
-    const nextSourceFile = this.loadCycleSourceFile(this.toRepoRelativePath(resolvedPath));
-    if (!nextSourceFile) {
-      return undefined;
-    }
-
-    return this.resolveExportedSymbol(nextSourceFile, matchingExport.getName(), new Set(visited));
-  }
-
-  private getExportedSpecifierName(namedExport: {
-    getAliasNode(): { getText(): string } | undefined;
-    getName(): string;
-  }): string {
-    return namedExport.getAliasNode()?.getText() ?? namedExport.getName();
-  }
-
-  private isPureBarrelModule(sourceFile: SourceFile): boolean {
-    const statements = sourceFile.getStatements();
-    if (statements.some((statement) => !Node.isImportDeclaration(statement) && !Node.isExportDeclaration(statement))) {
-      return false;
-    }
-
-    for (const importDecl of sourceFile.getImportDeclarations()) {
-      if (
-        !importDecl.isTypeOnly() &&
-        importDecl.getNamedImports().length === 0 &&
-        !importDecl.getDefaultImport() &&
-        !importDecl.getNamespaceImport()
-      ) {
-        return false;
-      }
-    }
-
-    const exportDeclarations = sourceFile.getExportDeclarations();
-    return exportDeclarations.length > 0 && exportDeclarations.every((decl) => Boolean(decl.getModuleSpecifierValue()));
-  }
-
-  private hasReExportDeclarations(sourceFile: SourceFile): boolean {
-    return sourceFile.getExportDeclarations().some((decl) => Boolean(decl.getModuleSpecifierValue()));
   }
 
   private resolveModulePath(filePath: string, moduleSpecifier: string): string | undefined {

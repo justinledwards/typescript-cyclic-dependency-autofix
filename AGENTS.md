@@ -1,44 +1,107 @@
 # AGENTS.md - Circular Dependency Autofix Bot
 
+## Project Goal
+
+This repository is building a data-first cycle analysis and autofix platform for JavaScript and TypeScript repositories.
+
+The target workflow is:
+
+`detect -> extract features -> rank against historical evidence -> generate candidates -> validate -> review -> learn`
+
+The project should keep moving toward:
+
+- reusable observations for every cycle, including unsupported cases
+- graph-aware planning instead of only file-level heuristics
+- ranking informed by benchmark, validation, and review history
+- automation of patterns that repeatedly validate and survive human review
+
 ## Tech Stack
-- **Runtime:** Node.js 25 (pinned via mise.toml)
-- **Package Manager:** pnpm 10 (pinned via mise.toml)
-- **UI Framework:** TanStack Start (Vite 7 + React 19 + file-based routing)
-- **Language:** TypeScript (strict mode)
-- **Backend API:** Fastify 5 (port 3001, serves `/api/*`)
+
+- **Runtime:** Node.js 25
+- **Package Manager:** pnpm 10
+- **Frontend:** TanStack Start, React 19, Tailwind CSS 4
+- **Backend API:** Fastify 5
 - **Database:** SQLite via better-sqlite3
-- **Dependency Analysis:** dependency-cruiser
-- **AST & Semantic Analysis:** ts-morph (TypeScript Compiler API)
-- **Codemod Engine:** jscodeshift + recast
+- **Cycle Detection:** dependency-cruiser
+- **Semantic Analysis:** ts-morph
+- **Codemods:** jscodeshift + recast
 - **Git Operations:** simple-git
-- **Styling:** Tailwind CSS 4
+- **Testing:** Vitest
 
 ## Project Structure
-- `/src` — TanStack Start frontend (React, file-based routes in `/src/routes`)
-- `/backend` — Fastify API server (port 3001, imports from `/db`)
-- `/analyzer` — Core logic: dependency-cruiser cycle detection, ts-morph semantic analysis, classification
-- `/codemod` — jscodeshift rewrite scripts for safe symbol extraction (not yet implemented)
-- `/cli` — Commander-based CLI for scan, retry, and export commands
-- `/db` — SQLite schema, DTOs, and prepared-statement data access layer
-- `/worktrees` — Isolated, temporary local repository clones for safe patch generation (gitignored)
 
-## Development
-- `npm run dev` — Starts both Fastify backend (port 3001) and TanStack Start frontend (port 3000) via concurrently
-- `npm run dev:frontend` — Frontend only
-- `npm run dev:backend` — Backend only
-- `npm run test` — Run vitest
+- `/src` — review UI and application routes
+- `/backend` — Fastify API surface
+- `/analyzer` — cycle detection, feature extraction, planner logic
+- `/codemod` — candidate rewrite and patch generation
+- `/cli` — scan, retry, export, and future report/rescore commands
+- `/db` — SQLite schema and data access layer
+- `/worktrees` — isolated repository clones and temp workspaces
+
+## Development Commands
+
+- `pnpm run dev`
+- `pnpm run dev:frontend`
+- `pnpm run dev:backend`
+- `pnpm run test`
+- `pnpm run scan <repo-url-or-path>`
+- `pnpm run scan:all`
+- `pnpm run retry:failed`
+- `pnpm run export:patches`
+
+## Engineering Rules
+
+### 1. Data capture is a product feature
+
+Every new feature should improve the evidence loop, not bypass it.
+
+Prefer designs that persist:
+
+- cycle identity
+- feature vectors
+- strategy attempts
+- ranking signals
+- validation outcomes
+- review outcomes
+- benchmark labels
+
+Unsupported cases are still useful data.
+
+### 2. Correctness and ranking are separate
+
+- Safety and correctness come from structural analysis and validation.
+- Ranking decides which already-safe candidates are most promising.
+- ML, if added later, is only a ranking aid and must not replace correctness checks.
+
+### 3. Prefer reusable graph/search layers over one-off heuristics
+
+When adding new strategies:
+
+- prefer shared graph features over strategy-local AST hacks
+- prefer reusable export/import reasoning over bespoke barrel handling
+- prefer explicit candidate generation and ranking over direct single-choice classification
+
+### 4. Keep the system conservative
+
+- Default to no patch when evidence is weak.
+- Preserve public APIs when possible.
+- Avoid introducing new files unless the evidence supports it.
+- Minimize diff noise and touched files.
 
 ## Coding Conventions
-- **Conservative Autofix:** Auto-fix only narrow, safe cases (top-level named functions, consts, type aliases, interfaces). No classes, default exports, or modules with side-effects in v1.
-- **Layered Architecture:** Keep detection, classification, rewrite, and validation strictly separated.
-- **Deterministic Classification:** Every cycle must be classified clearly (`autofix_extract_shared`, `autofix_direct_import`, `autofix_import_type`, `suggest_manual`, or `unsupported`) with explainable reasons.
-- **Formatting Preservation:** jscodeshift uses recast to minimize diff noise and preserve the target repository's formatting.
-- **Strict Validation:** A patch is only valid if re-running dependency-cruiser shows no new cycles and `tsc --noEmit` succeeds.
-- **Type Safety:** All TypeScript strict mode. Use DTOs from `/db/index.ts` for data shapes.
 
-## Commands
-- `pnpm run dev` — Start both Fastify backend and TanStack Start frontend
-- `pnpm run scan <repo-url-or-path>` — Run the dependency analyzer and classifier on a target repository
-- `pnpm run scan:all` — Scan all tracked repositories in the SQLite database
-- `pnpm run retry:failed` — Retry failed patch candidates
-- `pnpm run export:patches` — Export approved patch files for PR generation
+- **Type Safety:** strict TypeScript throughout
+- **Explainability:** every classification or rank should be explainable
+- **Replayability:** store enough information to rescore and replay decisions later
+- **Formatting Preservation:** prefer low-noise diffs via recast/jscodeshift
+- **Validation Boundary:** a candidate is only trustworthy if cycle and validation checks pass
+
+## Implementation Priorities
+
+1. observation and evidence capture
+2. graph-analysis core
+3. search-based candidate generation
+4. benchmark-driven ranking
+5. broader automation only after the above are solid
+
+If a change adds a new fix path without improving the evidence pipeline, it is probably the wrong next change.

@@ -1,6 +1,11 @@
 import { Command } from 'commander';
 import { analyzeRepository } from '../analyzer/analyzer.js';
 import {
+  getPatternReport,
+  getStrategyPerformanceReport,
+  getUnsupportedClustersReport,
+} from '../db/observationReports.js';
+import {
   annotateAcceptanceBenchmarkCase,
   getAcceptanceBenchmarkReport,
   runAcceptanceBenchmark,
@@ -17,9 +22,18 @@ import {
   type StructuredLogger,
 } from './observability.js';
 import { profileRepository } from './repoProfile.js';
+import { rescoreStoredCycles, retryFailedPatchCandidates } from './rescore.js';
 import { scanAllTrackedRepositories } from './scanAll.js';
 import { scanRepository } from './scanner.js';
 import { formatSmokeSuiteResult, loadSmokeFixtures, runSmokeSuite } from './smoke.js';
+
+const WORKTREES_DIR_OPTION_DESCRIPTION = 'Directory to use for repository worktrees';
+const SCAN_WORKTREES_DIR_OPTION_DESCRIPTION = 'Directory to use for scan worktrees';
+const VALIDATION_CONCURRENCY_OPTION_DESCRIPTION = 'Maximum concurrent validation jobs';
+const LIMIT_OPTION_DESCRIPTION = 'Limit how many corpus repositories are processed';
+const WORKTREES_DIR_OPTION = '--worktrees-dir <path>';
+const VALIDATION_CONCURRENCY_OPTION = '--validation-concurrency <count>';
+const LIMIT_OPTION = '--limit <count>';
 
 export function createProgram(): Command {
   const program = new Command();
@@ -29,8 +43,8 @@ export function createProgram(): Command {
   program
     .command('scan <repo>')
     .description('Run the dependency analyzer and classifier on a target repository')
-    .option('--worktrees-dir <path>', 'Directory to use for scan worktrees')
-    .option('--validation-concurrency <count>', 'Maximum concurrent validation jobs', parseInteger)
+    .option(WORKTREES_DIR_OPTION, SCAN_WORKTREES_DIR_OPTION_DESCRIPTION)
+    .option(VALIDATION_CONCURRENCY_OPTION, VALIDATION_CONCURRENCY_OPTION_DESCRIPTION, parseInteger)
     .action(async (repo: string, options: { worktreesDir?: string; validationConcurrency?: number }) => {
       console.log(`Scanning repository: ${repo}`);
       try {
@@ -50,7 +64,7 @@ export function createProgram(): Command {
   program
     .command('smoke [fixturesPath]')
     .description('Run the real-repo smoke suite from a fixture list')
-    .option('--worktrees-dir <path>', 'Directory to use for smoke suite worktrees')
+    .option(WORKTREES_DIR_OPTION, 'Directory to use for smoke suite worktrees')
     .action(async (fixturesPath = 'smoke.fixtures.json', options: { worktreesDir?: string }) => {
       try {
         const fixtures = await loadSmokeFixtures(fixturesPath);
@@ -80,7 +94,7 @@ export function createProgram(): Command {
     .option('--search-root <path>', 'Additional root path to search for local repository checkouts', collectString, [])
     .option('--workspace <path>', 'Directory to clone missing repositories into before benchmarking')
     .option('--clone-missing', 'Clone missing repositories into the workspace before benchmarking')
-    .option('--limit <count>', 'Limit how many corpus repositories are processed', parseInteger)
+    .option(LIMIT_OPTION, LIMIT_OPTION_DESCRIPTION, parseInteger)
     .option('--scan-worktrees-dir <path>', 'Directory to use for temporary scan worktrees')
     .action(
       async (options: {
@@ -166,7 +180,7 @@ export function createProgram(): Command {
     .option('--search-root <path>', 'Additional root path to search for local repository checkouts', collectString, [])
     .option('--workspace <path>', 'Directory to clone missing repositories into before mining')
     .option('--clone-missing', 'Clone missing repositories into the workspace before mining')
-    .option('--limit <count>', 'Limit how many corpus repositories are processed', parseInteger)
+    .option(LIMIT_OPTION, LIMIT_OPTION_DESCRIPTION, parseInteger)
     .option('--max-commits <count>', 'Limit how many commits are scanned per repository', parseInteger)
     .option('--max-matches <count>', 'Limit how many benchmark cases are stored per repository', parseInteger)
     .action(
@@ -272,9 +286,9 @@ export function createProgram(): Command {
   program
     .command('scan:all')
     .description('Scan all tracked repositories in the database')
-    .option('--worktrees-dir <path>', 'Directory to use for scan worktrees')
+    .option(WORKTREES_DIR_OPTION, SCAN_WORKTREES_DIR_OPTION_DESCRIPTION)
     .option('--concurrency <count>', 'Maximum concurrent repository scans', parseInteger)
-    .option('--validation-concurrency <count>', 'Maximum concurrent validation jobs', parseInteger)
+    .option(VALIDATION_CONCURRENCY_OPTION, VALIDATION_CONCURRENCY_OPTION_DESCRIPTION, parseInteger)
     .action(async (options: { worktreesDir?: string; concurrency?: number; validationConcurrency?: number }) => {
       try {
         const result = await scanAllTrackedRepositories({
@@ -306,10 +320,97 @@ export function createProgram(): Command {
     });
 
   program
+    .command('report:patterns')
+    .description('Print recurring cycle-shape, failure-cluster, and unsupported-cluster summaries')
+    .action(() => {
+      try {
+        console.log(JSON.stringify(getPatternReport(), null, 2));
+      } catch (error) {
+        console.error('Failed to build the pattern report:', error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('report:strategy-performance')
+    .description('Print strategy performance grouped by repository profile and acceptance history')
+    .action(() => {
+      try {
+        console.log(JSON.stringify(getStrategyPerformanceReport(), null, 2));
+      } catch (error) {
+        console.error('Failed to build the strategy performance report:', error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('report:unsupported-clusters')
+    .description('Print the most recurrent unsupported or manual-review cycle clusters')
+    .action(() => {
+      try {
+        console.log(JSON.stringify(getUnsupportedClustersReport(), null, 2));
+      } catch (error) {
+        console.error('Failed to build the unsupported cluster report:', error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('rescore')
+    .description('Recompute planner rankings for stored cycles and append new observation versions')
+    .option('--cycle-id <id>', 'Restrict rescoring to a specific stored cycle ID', collectInteger, [])
+    .option(LIMIT_OPTION, 'Limit how many stored cycles are rescored', parseInteger)
+    .option(WORKTREES_DIR_OPTION, WORKTREES_DIR_OPTION_DESCRIPTION)
+    .option(VALIDATION_CONCURRENCY_OPTION, VALIDATION_CONCURRENCY_OPTION_DESCRIPTION, parseInteger)
+    .option('--only-failed', 'Only rescore cycles whose latest candidate observations failed validation')
+    .action(
+      async (options: {
+        cycleId: number[];
+        limit?: number;
+        worktreesDir?: string;
+        validationConcurrency?: number;
+        onlyFailed?: boolean;
+      }) => {
+        try {
+          const result = await rescoreStoredCycles({
+            cycleIds: options.cycleId,
+            limit: options.limit,
+            worktreesDir: options.worktreesDir,
+            onlyFailed: options.onlyFailed,
+            logger: createCliLogger(),
+            validationLimiter: createConcurrencyLimiter(
+              resolveConcurrencySetting(options.validationConcurrency, 'AUTOFIX_VALIDATION_CONCURRENCY', 1),
+            ),
+          });
+          console.log(JSON.stringify(result, null, 2));
+        } catch (error) {
+          console.error('Failed to rescore stored cycles:', error);
+          process.exit(1);
+        }
+      },
+    );
+
+  program
     .command('retry:failed')
     .description('Retry failed patch candidates')
-    .action(() => {
-      console.log('Retrying failed patch candidates...');
+    .option(LIMIT_OPTION, 'Limit how many failed cycles are retried', parseInteger)
+    .option(WORKTREES_DIR_OPTION, WORKTREES_DIR_OPTION_DESCRIPTION)
+    .option(VALIDATION_CONCURRENCY_OPTION, VALIDATION_CONCURRENCY_OPTION_DESCRIPTION, parseInteger)
+    .action(async (options: { limit?: number; worktreesDir?: string; validationConcurrency?: number }) => {
+      try {
+        const result = await retryFailedPatchCandidates({
+          limit: options.limit,
+          worktreesDir: options.worktreesDir,
+          logger: createCliLogger(),
+          validationLimiter: createConcurrencyLimiter(
+            resolveConcurrencySetting(options.validationConcurrency, 'AUTOFIX_VALIDATION_CONCURRENCY', 1),
+          ),
+        });
+        console.log(JSON.stringify(result, null, 2));
+      } catch (error) {
+        console.error('Failed to retry failed patch candidates:', error);
+        process.exit(1);
+      }
     });
 
   program
@@ -397,6 +498,10 @@ function parseScore(value: string): number {
 
 function collectString(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+function collectInteger(value: string, previous: number[]): number[] {
+  return [...previous, parseInteger(value)];
 }
 
 function createCliLogger(): StructuredLogger {

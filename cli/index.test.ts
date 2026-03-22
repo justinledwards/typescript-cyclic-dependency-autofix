@@ -3,6 +3,11 @@ import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { analyzeRepository } from '../analyzer/analyzer.js';
 import {
+  getPatternReport,
+  getStrategyPerformanceReport,
+  getUnsupportedClustersReport,
+} from '../db/observationReports.js';
+import {
   annotateAcceptanceBenchmarkCase,
   getAcceptanceBenchmarkReport,
   runAcceptanceBenchmark,
@@ -14,6 +19,7 @@ import { exportApprovedPatches } from './exportPatches.js';
 import { createProgram } from './index.js';
 import { getOperationalMetrics } from './metrics.js';
 import { profileRepository } from './repoProfile.js';
+import { rescoreStoredCycles, retryFailedPatchCandidates } from './rescore.js';
 import { scanAllTrackedRepositories } from './scanAll.js';
 import { scanRepository } from './scanner.js';
 import { formatSmokeSuiteResult, loadSmokeFixtures, runSmokeSuite } from './smoke.js';
@@ -21,6 +27,92 @@ import { formatSmokeSuiteResult, loadSmokeFixtures, runSmokeSuite } from './smok
 const fixtureRoot = vi.hoisted(() => `${process.cwd()}/.test-fixtures`);
 const exportedDir = vi.hoisted(() => `${process.cwd()}/.test-fixtures/patches`);
 mkdirSync(fixtureRoot, { recursive: true });
+
+vi.mock('../db/observationReports.js', () => ({
+  getPatternReport: vi.fn().mockReturnValue({
+    summary: {
+      cycleObservations: 3,
+      candidateObservations: 7,
+    },
+    cycleShapes: [
+      {
+        cycleShape: 'two_file',
+        cycleSize: 2,
+        hasBarrelFile: false,
+        hasSharedModuleFile: false,
+        packageManager: 'pnpm',
+        workspaceMode: 'workspace',
+        count: 2,
+      },
+    ],
+    failureClusters: [
+      {
+        strategy: 'extract_shared',
+        failureCategory: 'typecheck_failed',
+        cycleShape: 'two_file',
+        packageManager: 'pnpm',
+        workspaceMode: 'workspace',
+        count: 1,
+        averageConfidence: 0.72,
+        averageUpstreamability: 0.68,
+      },
+    ],
+    unsupportedClusters: [
+      {
+        classification: 'unsupported',
+        cycleShape: 'multi_file',
+        cycleSize: 3,
+        hasBarrelFile: true,
+        packageManager: 'pnpm',
+        workspaceMode: 'workspace',
+        count: 1,
+        samplePaths: ['a.ts -> b.ts -> c.ts -> a.ts'],
+        reasons: ['Only two-file cycles are supported for autofix in v1.'],
+      },
+    ],
+  }),
+  getStrategyPerformanceReport: vi.fn().mockReturnValue({
+    byRepositoryProfile: [
+      {
+        strategy: 'import_type',
+        packageManager: 'pnpm',
+        workspaceMode: 'workspace',
+        attempts: 3,
+        promoted: 2,
+        passedValidations: 2,
+        failedValidations: 0,
+        approvedReviews: 1,
+        rejectedReviews: 0,
+        prCandidates: 1,
+        ignoredReviews: 0,
+      },
+    ],
+    acceptanceByStrategy: [
+      {
+        strategy: 'import_type',
+        classification: 'autofix_import_type',
+        totalCases: 2,
+        acceptedCases: 1,
+        rejectedCases: 0,
+        needsReviewCases: 1,
+        acceptanceRate: 0.5,
+      },
+    ],
+  }),
+  getUnsupportedClustersReport: vi.fn().mockReturnValue([
+    {
+      classification: 'suggest_manual',
+      cycleShape: 'multi_file',
+      cycleSize: 4,
+      hasBarrelFile: false,
+      packageManager: 'npm',
+      workspaceMode: 'single-package',
+      count: 2,
+      samplePaths: ['x.ts -> y.ts -> z.ts -> x.ts'],
+      reasons: ['Barrel re-export graph is ambiguous or side-effectful.'],
+    },
+  ]),
+}));
 
 vi.mock('./scanner.js', () => ({
   scanRepository: vi.fn().mockResolvedValue({ scanId: 999, cyclesFound: 2 }),
@@ -434,6 +526,23 @@ vi.mock('./repoProfile.js', () => ({
   }),
 }));
 
+vi.mock('./rescore.js', () => ({
+  rescoreStoredCycles: vi.fn().mockResolvedValue({
+    processedCycles: 2,
+    skippedCycles: 0,
+    createdObservations: 2,
+    retriedOnlyFailed: false,
+    cycleIds: [11, 12],
+  }),
+  retryFailedPatchCandidates: vi.fn().mockResolvedValue({
+    processedCycles: 1,
+    skippedCycles: 0,
+    createdObservations: 1,
+    retriedOnlyFailed: true,
+    cycleIds: [15],
+  }),
+}));
+
 describe('CLI', () => {
   it('creates a program with the correct name and version', () => {
     const program = createProgram();
@@ -724,14 +833,101 @@ describe('CLI', () => {
     consoleSpy.mockRestore();
   });
 
-  it('retry:failed command logs retry message', () => {
+  it('report:patterns command prints the pattern report as JSON', async () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const program = createProgram();
     program.exitOverride();
 
-    program.parse(['retry:failed'], { from: 'user' });
+    await program.parseAsync(['node', 'test', 'report:patterns']);
 
-    expect(consoleSpy).toHaveBeenCalledWith('Retrying failed patch candidates...');
+    expect(vi.mocked(getPatternReport)).toHaveBeenCalledWith();
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      summary: {
+        cycleObservations: 3,
+        candidateObservations: 7,
+      },
+    });
+    consoleSpy.mockRestore();
+  });
+
+  it('report:strategy-performance command prints grouped strategy performance as JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'report:strategy-performance']);
+
+    expect(vi.mocked(getStrategyPerformanceReport)).toHaveBeenCalledWith();
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      byRepositoryProfile: [
+        {
+          strategy: 'import_type',
+          attempts: 3,
+        },
+      ],
+    });
+    consoleSpy.mockRestore();
+  });
+
+  it('report:unsupported-clusters command prints unsupported cluster summaries as JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'report:unsupported-clusters']);
+
+    expect(vi.mocked(getUnsupportedClustersReport)).toHaveBeenCalledWith();
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          classification: 'suggest_manual',
+          count: 2,
+        }),
+      ]),
+    );
+    consoleSpy.mockRestore();
+  });
+
+  it('rescore command recomputes stored cycle rankings', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'rescore', '--cycle-id', '11', '--only-failed']);
+
+    expect(vi.mocked(rescoreStoredCycles)).toHaveBeenCalledWith({
+      cycleIds: [11],
+      limit: undefined,
+      worktreesDir: undefined,
+      onlyFailed: true,
+      logger: expect.anything(),
+      validationLimiter: expect.any(Object),
+    });
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      processedCycles: 2,
+      cycleIds: [11, 12],
+    });
+    consoleSpy.mockRestore();
+  });
+
+  it('retry:failed command retries failed patch candidates through rescoring', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'retry:failed', '--limit', '2']);
+
+    expect(vi.mocked(retryFailedPatchCandidates)).toHaveBeenCalledWith({
+      limit: 2,
+      worktreesDir: undefined,
+      logger: expect.anything(),
+      validationLimiter: expect.any(Object),
+    });
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      processedCycles: 1,
+      retriedOnlyFailed: true,
+      cycleIds: [15],
+    });
     consoleSpy.mockRestore();
   });
 
@@ -961,7 +1157,7 @@ describe('CLI', () => {
     exitSpy.mockRestore();
   });
 
-  it('has all fourteen subcommands registered', () => {
+  it('has all expected subcommands registered', () => {
     const program = createProgram();
     const commandNames = program.commands.map((cmd) => cmd.name());
     expect(commandNames).toContain('smoke');
@@ -975,6 +1171,10 @@ describe('CLI', () => {
     expect(commandNames).toContain('mine:repo-history');
     expect(commandNames).toContain('scan:all');
     expect(commandNames).toContain('metrics:report');
+    expect(commandNames).toContain('report:patterns');
+    expect(commandNames).toContain('report:strategy-performance');
+    expect(commandNames).toContain('report:unsupported-clusters');
+    expect(commandNames).toContain('rescore');
     expect(commandNames).toContain('retry:failed');
     expect(commandNames).toContain('create:pr');
     expect(commandNames).toContain('export:patches');

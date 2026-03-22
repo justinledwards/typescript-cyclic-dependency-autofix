@@ -36,11 +36,16 @@ vi.mock('../db/index.js', async () => {
     updateScanStatus: stmts.updateScanStatus,
     addCycle: stmts.addCycle,
     getCyclesByScanId: stmts.getCyclesByScanId,
+    addCycleObservation: stmts.addCycleObservation,
+    getCycleObservationsByScanId: stmts.getCycleObservationsByScanId,
+    getLatestCycleObservationByCycleId: stmts.getLatestCycleObservationByCycleId,
     getScan: stmts.getScan,
     addFixCandidate: stmts.addFixCandidate,
     getFixCandidatesByCycleId: stmts.getFixCandidatesByCycleId,
     addPatch: stmts.addPatch,
     getPatchesByFixCandidateId: stmts.getPatchesByFixCandidateId,
+    addCandidateObservation: stmts.addCandidateObservation,
+    getCandidateObservationsByCycleObservationId: stmts.getCandidateObservationsByCycleObservationId,
     addPatchReplay: stmts.addPatchReplay,
     getPatchReplayByPatchId: stmts.getPatchReplayByPatchId,
   };
@@ -68,6 +73,8 @@ describe('Scanner Worker', () => {
       summary: 'Validation passed.',
     });
 
+    dbModule.getDb().prepare('DELETE FROM candidate_observations').run();
+    dbModule.getDb().prepare('DELETE FROM cycle_observations').run();
     dbModule.getDb().prepare('DELETE FROM patch_replays').run();
     dbModule.getDb().prepare('DELETE FROM patches').run();
     dbModule.getDb().prepare('DELETE FROM fix_candidates').run();
@@ -309,6 +316,13 @@ describe('Scanner Worker', () => {
     expect(candidates).toHaveLength(1);
     expect(candidates[0].classification).toBe('autofix_import_type');
     expect(candidates[0].confidence).toBe(0.9);
+
+    const cycleObservation = dbModule.getLatestCycleObservationByCycleId.get(cycles[0].id) as {
+      selected_classification: string;
+      planner_attempts: string;
+    };
+    expect(cycleObservation.selected_classification).toBe('autofix_import_type');
+    expect(JSON.parse(cycleObservation.planner_attempts)).toEqual([]);
   });
 
   it('persists ranked planner candidates and validates executable shortlist entries', async () => {
@@ -344,6 +358,80 @@ describe('Scanner Worker', () => {
               packageManager: 'pnpm',
               workspaceMode: 'workspace',
               validationCommandCount: 2,
+            },
+            graphSummary: {
+              modules: [
+                {
+                  file: 'a.ts',
+                  exportedSymbols: ['AType'],
+                  localExportedSymbols: ['AType'],
+                  movableSymbols: ['AType'],
+                  moduleKind: 'declaration_only',
+                  hasReExports: false,
+                  hasTopLevelSideEffects: false,
+                },
+                {
+                  file: 'b.ts',
+                  exportedSymbols: ['BType'],
+                  localExportedSymbols: ['BType'],
+                  movableSymbols: ['BType'],
+                  moduleKind: 'declaration_only',
+                  hasReExports: false,
+                  hasTopLevelSideEffects: false,
+                },
+              ],
+              importEdges: [
+                {
+                  from: 'a.ts',
+                  to: 'b.ts',
+                  kind: 'type',
+                  symbols: ['BType'],
+                  withinCycle: true,
+                },
+                {
+                  from: 'b.ts',
+                  to: 'a.ts',
+                  kind: 'type',
+                  symbols: ['AType'],
+                  withinCycle: true,
+                },
+              ],
+              exportEdges: [],
+              symbolNodes: [
+                {
+                  id: 'a.ts::AType',
+                  file: 'a.ts',
+                  symbol: 'AType',
+                  kind: 'interface',
+                  exported: true,
+                  movable: true,
+                },
+                {
+                  id: 'b.ts::BType',
+                  file: 'b.ts',
+                  symbol: 'BType',
+                  kind: 'interface',
+                  exported: true,
+                  movable: true,
+                },
+              ],
+              symbolEdges: [
+                { from: 'a.ts::AType', to: 'b.ts::BType', kind: 'import' },
+                { from: 'b.ts::BType', to: 'a.ts::AType', kind: 'import' },
+              ],
+              symbolSccs: [['a.ts::AType', 'b.ts::BType']],
+              exportResolutions: [],
+              metrics: {
+                moduleCount: 2,
+                importEdgeCount: 2,
+                exportEdgeCount: 0,
+                symbolNodeCount: 2,
+                symbolEdgeCount: 2,
+                symbolSccCount: 1,
+                barrelModuleCount: 0,
+                sideEffectModuleCount: 0,
+                movableSymbolCount: 2,
+              },
             },
             fallbackClassification: 'autofix_import_type',
             fallbackConfidence: 0.93,
@@ -432,6 +520,44 @@ describe('Scanner Worker', () => {
     expect(primaryPatches).toHaveLength(1);
     expect(secondaryPatches).toHaveLength(1);
     expect(vi.mocked(generatePatchForCycle)).toHaveBeenCalledTimes(2);
+
+    const cycleObservation = dbModule.getLatestCycleObservationByCycleId.get(cycles[0].id) as {
+      id: number;
+      graph_summary: string | null;
+    };
+    const attemptObservations = dbModule.getCandidateObservationsByCycleObservationId.all(
+      cycleObservation.id,
+    ) as Array<{
+      strategy: string | null;
+      status: string;
+      planner_rank: number;
+      promotion_eligible: number;
+      validation_status: string | null;
+    }>;
+    expect(attemptObservations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          strategy: 'import_type',
+          status: 'candidate',
+          planner_rank: 1,
+          promotion_eligible: 1,
+          validation_status: 'passed',
+        }),
+        expect.objectContaining({
+          strategy: 'extract_shared',
+          status: 'candidate',
+          planner_rank: 2,
+          promotion_eligible: 1,
+          validation_status: 'passed',
+        }),
+      ]),
+    );
+    expect(JSON.parse(cycleObservation.graph_summary ?? '{}')).toMatchObject({
+      metrics: {
+        symbolSccCount: 1,
+        movableSymbolCount: 2,
+      },
+    });
   });
 
   it('persists generated patches for executable fix plans', async () => {

@@ -46,6 +46,7 @@ const EMPTY_GRAPH_SUMMARY: CycleGraphSummary = {
   symbolEdges: [],
   symbolSccs: [],
   exportResolutions: [],
+  patternCategories: [],
   metrics: {
     moduleCount: 0,
     importEdgeCount: 0,
@@ -56,8 +57,23 @@ const EMPTY_GRAPH_SUMMARY: CycleGraphSummary = {
     barrelModuleCount: 0,
     sideEffectModuleCount: 0,
     movableSymbolCount: 0,
+    publicSeamModuleCount: 0,
+    internalSurfaceModuleCount: 0,
+    sharedModuleCount: 0,
+    apiShimModuleCount: 0,
+    pluginSdkModuleCount: 0,
+    setupSurfaceModuleCount: 0,
+    setupCoreModuleCount: 0,
+    cycleValueEdgeCount: 0,
+    cycleTypeEdgeCount: 0,
+    cycleSideEffectEdgeCount: 0,
+    cyclePublicSeamEdgeCount: 0,
+    exportResolutionAmbiguityCount: 0,
+    ownershipLocalizationEdgeCount: 0,
   },
 };
+
+const PUBLIC_SEAM_CATEGORIES = new Set(['api_shim', 'plugin_sdk_surface', 'setup_surface', 'setup_core']);
 
 export function buildCycleGraph(args: BuildCycleGraphArgs): CycleGraphSummary {
   const cycleFiles = [...new Set(args.cycleFiles)];
@@ -72,6 +88,18 @@ export function buildCycleGraph(args: BuildCycleGraphArgs): CycleGraphSummary {
   const symbolSccs = tarjanScc(symbolNodes, symbolEdges);
   const exportResolutions = buildExportResolutions(modules, exportEdges);
   const moduleSummaries = [...modules.values()];
+  const moduleCategoryCounts = countModuleCategories(moduleSummaries);
+  const cycleEdgeMetrics = summarizeCycleEdges(importEdges, modules);
+  const ownershipLocalizationEdgeCount = countOwnershipLocalizationEdges(importEdges);
+  const exportResolutionAmbiguityCount = exportResolutions.filter((resolution) => resolution.ambiguous).length;
+  const patternCategories = inferGraphPatternCategories({
+    modules: moduleSummaries,
+    importEdges,
+    exportEdges,
+    exportResolutions,
+    ownershipLocalizationEdgeCount,
+    cycleEdgeMetrics,
+  });
 
   return {
     modules: moduleSummaries,
@@ -81,6 +109,7 @@ export function buildCycleGraph(args: BuildCycleGraphArgs): CycleGraphSummary {
     symbolEdges,
     symbolSccs,
     exportResolutions,
+    patternCategories,
     metrics: {
       moduleCount: moduleSummaries.length,
       importEdgeCount: importEdges.length,
@@ -91,6 +120,19 @@ export function buildCycleGraph(args: BuildCycleGraphArgs): CycleGraphSummary {
       barrelModuleCount: moduleSummaries.filter((module) => module.moduleKind === 'pure_barrel').length,
       sideEffectModuleCount: moduleSummaries.filter((module) => module.hasTopLevelSideEffects).length,
       movableSymbolCount: symbolNodes.filter((node) => node.movable).length,
+      publicSeamModuleCount: moduleCategoryCounts.publicSeamModuleCount,
+      internalSurfaceModuleCount: moduleCategoryCounts.internalSurfaceModuleCount,
+      sharedModuleCount: moduleCategoryCounts.sharedModuleCount,
+      apiShimModuleCount: moduleCategoryCounts.apiShimModuleCount,
+      pluginSdkModuleCount: moduleCategoryCounts.pluginSdkModuleCount,
+      setupSurfaceModuleCount: moduleCategoryCounts.setupSurfaceModuleCount,
+      setupCoreModuleCount: moduleCategoryCounts.setupCoreModuleCount,
+      cycleValueEdgeCount: cycleEdgeMetrics.cycleValueEdgeCount,
+      cycleTypeEdgeCount: cycleEdgeMetrics.cycleTypeEdgeCount,
+      cycleSideEffectEdgeCount: cycleEdgeMetrics.cycleSideEffectEdgeCount,
+      cyclePublicSeamEdgeCount: cycleEdgeMetrics.cyclePublicSeamEdgeCount,
+      exportResolutionAmbiguityCount,
+      ownershipLocalizationEdgeCount,
     },
   };
 }
@@ -184,6 +226,7 @@ function summarizeModule(sourceFile: SourceFile, file: string): GraphModuleSumma
     exportedSymbols,
     localExportedSymbols,
     movableSymbols,
+    categories: classifyModuleCategories(file),
     moduleKind: determineModuleKind(hasReExports, hasOnlyImportExportStatements, hasTopLevelSideEffects),
     hasReExports,
     hasTopLevelSideEffects,
@@ -831,6 +874,195 @@ function getDeclarationNode(
 
 function createSymbolNodeId(file: string, symbol: string): string {
   return `${file}::${symbol}`;
+}
+
+function classifyModuleCategories(file: string): string[] {
+  const normalizedFile = file.replaceAll('\\', '/').toLowerCase();
+  const basename = normalizedFile.split('/').pop() ?? normalizedFile;
+  const categories = new Set<string>();
+
+  if (/^api\.[cm]?[jt]sx?$/.test(basename) || normalizedFile.includes('/api.')) {
+    categories.add('api_shim');
+  }
+  if (normalizedFile.includes('/plugin-sdk/')) {
+    categories.add('plugin_sdk_surface');
+  }
+  if (/^setup-surface\.[cm]?[jt]sx?$/.test(basename) || normalizedFile.includes('/setup-surface.')) {
+    categories.add('setup_surface');
+  }
+  if (/^setup-core\.[cm]?[jt]sx?$/.test(basename) || normalizedFile.includes('/setup-core.')) {
+    categories.add('setup_core');
+  }
+  if (
+    /^internal\.[cm]?[jt]sx?$/.test(basename) ||
+    normalizedFile.includes('/internal/') ||
+    normalizedFile.includes('/plugin-sdk-internal/')
+  ) {
+    categories.add('internal_surface');
+  }
+  if (normalizedFile.includes('.shared.')) {
+    categories.add('shared_module');
+  }
+  if (/^index\.[cm]?[jt]sx?$/.test(basename)) {
+    categories.add('barrel_entrypoint');
+  }
+
+  return [...categories];
+}
+
+function countModuleCategories(modules: GraphModuleSummary[]) {
+  const counts = {
+    publicSeamModuleCount: 0,
+    internalSurfaceModuleCount: 0,
+    sharedModuleCount: 0,
+    apiShimModuleCount: 0,
+    pluginSdkModuleCount: 0,
+    setupSurfaceModuleCount: 0,
+    setupCoreModuleCount: 0,
+  };
+
+  for (const module of modules) {
+    const categorySet = new Set(module.categories);
+    if ([...categorySet].some((category) => PUBLIC_SEAM_CATEGORIES.has(category))) {
+      counts.publicSeamModuleCount += 1;
+    }
+    if (categorySet.has('internal_surface')) {
+      counts.internalSurfaceModuleCount += 1;
+    }
+    if (categorySet.has('shared_module')) {
+      counts.sharedModuleCount += 1;
+    }
+    if (categorySet.has('api_shim')) {
+      counts.apiShimModuleCount += 1;
+    }
+    if (categorySet.has('plugin_sdk_surface')) {
+      counts.pluginSdkModuleCount += 1;
+    }
+    if (categorySet.has('setup_surface')) {
+      counts.setupSurfaceModuleCount += 1;
+    }
+    if (categorySet.has('setup_core')) {
+      counts.setupCoreModuleCount += 1;
+    }
+  }
+
+  return counts;
+}
+
+function summarizeCycleEdges(
+  importEdges: GraphImportEdge[],
+  modules: Map<string, GraphModuleSummary>,
+): {
+  cycleValueEdgeCount: number;
+  cycleTypeEdgeCount: number;
+  cycleSideEffectEdgeCount: number;
+  cyclePublicSeamEdgeCount: number;
+} {
+  let cycleValueEdgeCount = 0;
+  let cycleTypeEdgeCount = 0;
+  let cycleSideEffectEdgeCount = 0;
+  let cyclePublicSeamEdgeCount = 0;
+
+  for (const edge of importEdges) {
+    if (!edge.withinCycle) {
+      continue;
+    }
+
+    if (edge.kind === 'value') {
+      cycleValueEdgeCount += 1;
+    } else if (edge.kind === 'type') {
+      cycleTypeEdgeCount += 1;
+    } else {
+      cycleSideEffectEdgeCount += 1;
+    }
+
+    const sourceCategories = new Set(modules.get(edge.from)?.categories);
+    const targetCategories = new Set(modules.get(edge.to)?.categories);
+    if (
+      [...sourceCategories].some((category) => PUBLIC_SEAM_CATEGORIES.has(category)) ||
+      [...targetCategories].some((category) => PUBLIC_SEAM_CATEGORIES.has(category))
+    ) {
+      cyclePublicSeamEdgeCount += 1;
+    }
+  }
+
+  return {
+    cycleValueEdgeCount,
+    cycleTypeEdgeCount,
+    cycleSideEffectEdgeCount,
+    cyclePublicSeamEdgeCount,
+  };
+}
+
+function countOwnershipLocalizationEdges(importEdges: GraphImportEdge[]): number {
+  const cycleValueEdges = importEdges.filter((edge) => edge.withinCycle && edge.kind === 'value');
+  const hasOpposingNonSetterEdge = (candidate: GraphImportEdge) =>
+    cycleValueEdges.some(
+      (edge) =>
+        edge.from === candidate.to &&
+        edge.to === candidate.from &&
+        edge.symbols.some((symbol) => !isSetterLikeSymbol(symbol)),
+    );
+
+  return cycleValueEdges.filter(
+    (edge) => edge.symbols.some((symbol) => isSetterLikeSymbol(symbol)) && hasOpposingNonSetterEdge(edge),
+  ).length;
+}
+
+function inferGraphPatternCategories(args: {
+  modules: GraphModuleSummary[];
+  importEdges: GraphImportEdge[];
+  exportEdges: GraphExportEdge[];
+  exportResolutions: GraphExportResolution[];
+  ownershipLocalizationEdgeCount: number;
+  cycleEdgeMetrics: {
+    cycleValueEdgeCount: number;
+    cycleTypeEdgeCount: number;
+    cycleSideEffectEdgeCount: number;
+    cyclePublicSeamEdgeCount: number;
+  };
+}): string[] {
+  const labels = new Set<string>();
+  const moduleCategories = new Set<string>();
+  for (const module of args.modules) {
+    for (const category of module.categories ?? []) {
+      moduleCategories.add(category);
+    }
+  }
+  const reexportImportEdges = args.importEdges.filter((edge) => {
+    const targetModule = args.modules.find((module) => module.file === edge.to);
+    return edge.withinCycle && targetModule?.hasReExports;
+  });
+
+  if (args.exportEdges.length > 0 || reexportImportEdges.length > 0) {
+    labels.add('barrel_reexport_cleanup');
+  }
+  if (args.cycleEdgeMetrics.cyclePublicSeamEdgeCount > 0) {
+    labels.add('public_seam_bypass');
+  }
+  if (
+    args.exportEdges.length > 0 &&
+    (args.cycleEdgeMetrics.cyclePublicSeamEdgeCount > 0 ||
+      moduleCategories.has('api_shim') ||
+      moduleCategories.has('plugin_sdk_surface') ||
+      moduleCategories.has('setup_surface') ||
+      moduleCategories.has('setup_core'))
+  ) {
+    labels.add('export_graph_rewrite');
+  }
+  if (args.ownershipLocalizationEdgeCount > 0) {
+    labels.add('ownership_localization');
+    labels.add('host_owned_state_update');
+  }
+  if (moduleCategories.has('internal_surface')) {
+    labels.add('internal_surface_split');
+  }
+
+  return [...labels];
+}
+
+function isSetterLikeSymbol(symbol: string): boolean {
+  return /^(set|update|apply|assign)[A-Z_]/.test(symbol);
 }
 
 function determineModuleKind(

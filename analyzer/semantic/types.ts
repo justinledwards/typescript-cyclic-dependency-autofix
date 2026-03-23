@@ -50,6 +50,7 @@ export interface GraphModuleSummary {
   exportedSymbols: string[];
   localExportedSymbols: string[];
   movableSymbols: string[];
+  categories?: string[];
   moduleKind: 'declaration_only' | 'mixed' | 'pure_barrel';
   hasReExports: boolean;
   hasTopLevelSideEffects: boolean;
@@ -102,6 +103,7 @@ export interface CycleGraphSummary {
   symbolEdges: GraphSymbolEdge[];
   symbolSccs: string[][];
   exportResolutions: GraphExportResolution[];
+  patternCategories?: string[];
   metrics: {
     moduleCount: number;
     importEdgeCount: number;
@@ -112,6 +114,19 @@ export interface CycleGraphSummary {
     barrelModuleCount: number;
     sideEffectModuleCount: number;
     movableSymbolCount: number;
+    publicSeamModuleCount?: number;
+    internalSurfaceModuleCount?: number;
+    sharedModuleCount?: number;
+    apiShimModuleCount?: number;
+    pluginSdkModuleCount?: number;
+    setupSurfaceModuleCount?: number;
+    setupCoreModuleCount?: number;
+    cycleValueEdgeCount?: number;
+    cycleTypeEdgeCount?: number;
+    cycleSideEffectEdgeCount?: number;
+    cyclePublicSeamEdgeCount?: number;
+    exportResolutionAmbiguityCount?: number;
+    ownershipLocalizationEdgeCount?: number;
   };
 }
 
@@ -141,10 +156,27 @@ export interface CycleFeatureVector {
   symbolNodeCount?: number;
   symbolEdgeCount?: number;
   symbolSccCount?: number;
+  publicSeamModuleCount?: number;
+  internalSurfaceModuleCount?: number;
+  sharedModuleCount?: number;
+  apiShimModuleCount?: number;
+  pluginSdkModuleCount?: number;
+  setupSurfaceModuleCount?: number;
+  setupCoreModuleCount?: number;
+  cycleValueEdgeCount?: number;
+  cycleTypeEdgeCount?: number;
+  cycleSideEffectEdgeCount?: number;
+  cyclePublicSeamEdgeCount?: number;
+  exportResolutionAmbiguityCount?: number;
+  ownershipLocalizationEdgeCount?: number;
+  hasPublicSeamModule?: boolean;
+  hasInternalSurfaceModule?: boolean;
+  patternCategories?: string[];
 }
 
 export interface StrategyHistoricalEvidence {
   benchmarkMatches: number;
+  patternMatches?: number;
   profileMatches: number;
   approvedReviews: number;
   rejectedReviews: number;
@@ -153,6 +185,7 @@ export interface StrategyHistoricalEvidence {
   passedValidations: number;
   failedValidations: number;
   acceptedBenchmarks?: number;
+  acceptancePatternMatches?: number;
   rejectedBenchmarks?: number;
   needsReviewBenchmarks?: number;
   acceptanceProfileMatches?: number;

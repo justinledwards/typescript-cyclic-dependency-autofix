@@ -1,7 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import simpleGit from 'simple-git';
-import { loadHistoricalEvidence } from '../analyzer/semantic/evidence.js';
 import { type PlannerRepositoryProfile, SemanticAnalyzer } from '../analyzer/semantic/index.js';
 import type { CycleDTO, RepositoryDTO } from '../db/index.js';
 import { getDb, getRepository, updateRepositoryLocalPath } from '../db/index.js';
@@ -91,7 +90,6 @@ export async function rescoreStoredCycles(
       const repositoryProfile = await safePlannerRepositoryProfile(resolvedTarget.repoPath, cycleLogger);
       const semanticAnalyzer = new SemanticAnalyzer(resolvedTarget.repoPath, {
         repositoryProfile,
-        historicalEvidence: loadHistoricalEvidence(repositoryProfile),
       });
       const commitSha = await getLatestCommitSha(simpleGit(resolvedTarget.repoPath));
       const rescoredCycle: ScannedCycle = {

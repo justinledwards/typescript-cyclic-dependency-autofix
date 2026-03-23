@@ -112,11 +112,14 @@ describe('historical evidence loading', () => {
       },
     ];
 
-    const snapshot = loadHistoricalEvidence({
-      packageManager: 'pnpm',
-      workspaceMode: 'workspace',
-      validationCommandCount: 3,
-    });
+    const snapshot = loadHistoricalEvidence(
+      {
+        packageManager: 'pnpm',
+        workspaceMode: 'workspace',
+        validationCommandCount: 3,
+      },
+      ['public_seam_bypass'],
+    );
 
     expect(snapshot.totalBenchmarkCases).toBe(2);
     expect(snapshot.totalAcceptanceBenchmarkCases).toBe(3);
@@ -124,6 +127,7 @@ describe('historical evidence loading', () => {
     expect(snapshot.totalValidatedPatches).toBe(2);
     expect(snapshot.strategies.direct_import).toMatchObject({
       benchmarkMatches: 2,
+      patternMatches: 1,
       profileMatches: 4,
       approvedReviews: 1,
       passedValidations: 1,
@@ -134,6 +138,7 @@ describe('historical evidence loading', () => {
     });
     expect(snapshot.strategies.extract_shared).toMatchObject({
       rejectedBenchmarks: 2,
+      acceptancePatternMatches: 0,
       semanticWrongRejections: 1,
       diffNoisyRejections: 1,
       rejectedReviews: 1,
@@ -143,6 +148,7 @@ describe('historical evidence loading', () => {
     });
     expect(snapshot.strategies.host_state_update).toMatchObject({
       benchmarkMatches: 1,
+      patternMatches: 1,
       profileMatches: 2,
     });
   });

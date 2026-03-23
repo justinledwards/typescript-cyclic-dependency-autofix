@@ -52,11 +52,16 @@ describe('semantic graph core', () => {
       barrelModuleCount: 1,
       exportEdgeCount: 2,
       symbolNodeCount: 2,
+      publicSeamModuleCount: 0,
+      cyclePublicSeamEdgeCount: 0,
+      exportResolutionAmbiguityCount: 0,
     });
+    expect(graph.patternCategories).toEqual(expect.arrayContaining(['barrel_reexport_cleanup']));
     expect(graph.modules).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           file: 'index.ts',
+          categories: expect.arrayContaining(['barrel_entrypoint']),
           moduleKind: 'pure_barrel',
           hasReExports: true,
           hasTopLevelSideEffects: false,
@@ -119,6 +124,87 @@ describe('semantic graph core', () => {
         expect.objectContaining({ from: 'a.ts', to: 'b.ts', withinCycle: true }),
         expect.objectContaining({ from: 'b.ts', to: 'a.ts', withinCycle: true }),
       ]),
+    );
+  });
+
+  it('tags public seam and export-graph rewrite patterns from the graph', () => {
+    project.createSourceFile(
+      path.join(REPO_ROOT, 'consumer.ts'),
+      `
+      import { setSessionKey } from './api.ts';
+      export function boot(host: unknown) {
+        setSessionKey(host, 'next');
+      }
+    `,
+    );
+    project.createSourceFile(
+      path.join(REPO_ROOT, 'api.ts'),
+      `
+      export { setSessionKey } from './settings.ts';
+      export { readSessionKey } from './settings.ts';
+    `,
+    );
+    project.createSourceFile(
+      path.join(REPO_ROOT, 'settings.ts'),
+      `
+      import { boot } from './consumer.ts';
+      export function setSessionKey(_host: unknown, _next: string) {
+        boot({});
+      }
+      export function readSessionKey() {
+        return 'main';
+      }
+    `,
+    );
+
+    const graph = buildCycleGraph(createGraphArgs(project, ['consumer.ts', 'api.ts', 'settings.ts', 'consumer.ts']));
+
+    expect(graph.metrics).toMatchObject({
+      publicSeamModuleCount: 1,
+      apiShimModuleCount: 1,
+      cyclePublicSeamEdgeCount: 1,
+      ownershipLocalizationEdgeCount: 0,
+    });
+    expect(graph.patternCategories).toEqual(expect.arrayContaining(['public_seam_bypass', 'export_graph_rewrite']));
+    expect(graph.modules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          file: 'api.ts',
+          categories: expect.arrayContaining(['api_shim']),
+        }),
+      ]),
+    );
+  });
+
+  it('tags ownership-localization edges in two-file setter cycles', () => {
+    project.createSourceFile(
+      path.join(REPO_ROOT, 'chat.ts'),
+      `
+      import { setSessionKey } from './settings';
+      export function refreshChat() {}
+      export function run(host: unknown) {
+        setSessionKey(host, 'next');
+      }
+    `,
+    );
+    project.createSourceFile(
+      path.join(REPO_ROOT, 'settings.ts'),
+      `
+      import { refreshChat } from './chat';
+      export function setSessionKey(_host: unknown, _next: string) {
+        refreshChat();
+      }
+    `,
+    );
+
+    const graph = buildCycleGraph(createGraphArgs(project, ['chat.ts', 'settings.ts', 'chat.ts']));
+
+    expect(graph.metrics).toMatchObject({
+      cycleValueEdgeCount: 2,
+      ownershipLocalizationEdgeCount: 1,
+    });
+    expect(graph.patternCategories).toEqual(
+      expect.arrayContaining(['ownership_localization', 'host_owned_state_update']),
     );
   });
 });

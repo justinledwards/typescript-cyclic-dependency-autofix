@@ -38,6 +38,21 @@ import type {
 } from './types.js';
 import { missingCycleFilesReason } from './types.js';
 
+type PersistenceModuleKind = 'package' | 'repo_file';
+
+type HostStateHelperStatementResult =
+  | { kind: 'alias'; settingsValueName: string }
+  | { kind: 'host_assignment' }
+  | {
+      kind: 'persistence';
+      persistenceFunction: string;
+      persistenceModule: string;
+      persistenceModuleKind: PersistenceModuleKind;
+    }
+  | { kind: 'mirror'; mirrorHostProperty: string }
+  | { kind: 'ignored' }
+  | { kind: 'reject' };
+
 export class SemanticAnalyzer {
   public project: Project;
 
@@ -477,7 +492,7 @@ export class SemanticAnalyzer {
     return {
       strategy: 'direct_import',
       status: 'candidate',
-      summary: `Rewrite ${directImportResult.plan.length} barrel import edge(s) to direct imports.`,
+      summary: `Rewrite ${directImportResult.plan.length} re-export seam import edge(s) to direct imports.`,
       reasons: [
         `Cycle can be resolved by importing ${firstPlan.symbols.join(', ')} directly from ${firstPlan.targetFile} instead of ${firstPlan.barrelFile}.`,
       ],
@@ -815,7 +830,7 @@ export class SemanticAnalyzer {
   ):
     | {
         persistenceModule: string;
-        persistenceModuleKind: 'package' | 'repo_file';
+        persistenceModuleKind: PersistenceModuleKind;
         persistenceFunction: string;
         mirrorHostProperty?: string;
       }
@@ -835,55 +850,84 @@ export class SemanticAnalyzer {
       return undefined;
     }
 
+    const settingsValueNames = new Set<string>([settingsParamName]);
+
+    const collectedPattern = this.collectHostStatePersistencePattern(
+      body.getStatements(),
+      targetFile,
+      hostParamName,
+      stateObjectProperty,
+      updatedProperty,
+      settingsValueNames,
+      settingsParamName,
+      sourceFilePath,
+      targetFilePath,
+    );
+    if (!collectedPattern) {
+      return undefined;
+    }
+
+    return {
+      persistenceModule: collectedPattern.persistenceModule,
+      persistenceModuleKind: collectedPattern.persistenceModuleKind,
+      persistenceFunction: collectedPattern.persistenceFunction,
+      mirrorHostProperty: collectedPattern.mirrorHostProperty,
+    };
+  }
+
+  private collectHostStatePersistencePattern(
+    statements: Node[],
+    targetFile: SourceFile,
+    hostParamName: string,
+    stateObjectProperty: string,
+    updatedProperty: string,
+    settingsValueNames: Set<string>,
+    settingsParamName: string,
+    sourceFilePath: string,
+    targetFilePath: string,
+  ):
+    | {
+        persistenceModule: string;
+        persistenceModuleKind: PersistenceModuleKind;
+        persistenceFunction: string;
+        mirrorHostProperty?: string;
+      }
+    | undefined {
     let persistenceFunction: string | undefined;
     let persistenceModule: string | undefined;
-    let persistenceModuleKind: 'package' | 'repo_file' | undefined;
+    let persistenceModuleKind: PersistenceModuleKind | undefined;
     let mirrorHostProperty: string | undefined;
 
-    for (const statement of body.getStatements()) {
-      const hostStateAssignment = this.extractHostStateAssignment(
-        statement,
-        hostParamName,
-        stateObjectProperty,
-        settingsParamName,
-      );
-      if (hostStateAssignment) {
-        continue;
-      }
-
-      const persistenceCall = this.extractImportedPersistenceCall(
+    for (const statement of statements) {
+      const statementResult = this.classifyHostStateHelperStatement(
         targetFile,
-        statement,
-        settingsParamName,
-        sourceFilePath,
-        targetFilePath,
-      );
-      if (persistenceCall) {
-        if (persistenceFunction !== undefined) {
-          return undefined;
-        }
-
-        persistenceFunction = persistenceCall.persistenceFunction;
-        persistenceModule = persistenceCall.persistenceModule;
-        persistenceModuleKind = persistenceCall.persistenceModuleKind;
-        continue;
-      }
-
-      const mirrorAssignment = this.extractMirrorHostPropertyAssignment(
         statement,
         hostParamName,
         stateObjectProperty,
         updatedProperty,
+        settingsValueNames,
+        settingsParamName,
+        sourceFilePath,
+        targetFilePath,
+        persistenceFunction,
       );
-      if (mirrorAssignment) {
-        if (this.isConflictingMirrorHostProperty(mirrorHostProperty, mirrorAssignment)) {
-          return undefined;
-        }
-        mirrorHostProperty = mirrorAssignment;
-        continue;
+
+      const nextPattern = this.applyHostStateHelperStatementResult(
+        statementResult,
+        settingsValueNames,
+        persistenceFunction,
+        persistenceModule,
+        persistenceModuleKind,
+        mirrorHostProperty,
+      );
+      if (!nextPattern) {
+        return undefined;
       }
 
-      return undefined;
+      persistenceFunction = nextPattern.persistenceFunction;
+      persistenceModule = nextPattern.persistenceModule;
+      persistenceModuleKind = nextPattern.persistenceModuleKind;
+      mirrorHostProperty = nextPattern.mirrorHostProperty;
     }
 
     if (!persistenceFunction || !persistenceModule || !persistenceModuleKind) {
@@ -896,6 +940,140 @@ export class SemanticAnalyzer {
       persistenceFunction,
       mirrorHostProperty,
     };
+  }
+
+  private applyHostStateHelperStatementResult(
+    statementResult: HostStateHelperStatementResult,
+    settingsValueNames: Set<string>,
+    persistenceFunction: string | undefined,
+    persistenceModule: string | undefined,
+    persistenceModuleKind: PersistenceModuleKind | undefined,
+    mirrorHostProperty: string | undefined,
+  ):
+    | {
+        persistenceFunction: string | undefined;
+        persistenceModule: string | undefined;
+        persistenceModuleKind: PersistenceModuleKind | undefined;
+        mirrorHostProperty: string | undefined;
+      }
+    | undefined {
+    if (statementResult.kind === 'alias') {
+      settingsValueNames.add(statementResult.settingsValueName);
+      return {
+        persistenceFunction,
+        persistenceModule,
+        persistenceModuleKind,
+        mirrorHostProperty,
+      };
+    }
+
+    if (statementResult.kind === 'host_assignment' || statementResult.kind === 'ignored') {
+      return {
+        persistenceFunction,
+        persistenceModule,
+        persistenceModuleKind,
+        mirrorHostProperty,
+      };
+    }
+
+    if (statementResult.kind === 'persistence') {
+      if (persistenceFunction !== undefined) {
+        return undefined;
+      }
+
+      return {
+        persistenceFunction: statementResult.persistenceFunction,
+        persistenceModule: statementResult.persistenceModule,
+        persistenceModuleKind: statementResult.persistenceModuleKind,
+        mirrorHostProperty,
+      };
+    }
+
+    if (statementResult.kind === 'mirror') {
+      if (this.isConflictingMirrorHostProperty(mirrorHostProperty, statementResult.mirrorHostProperty)) {
+        return undefined;
+      }
+
+      return {
+        persistenceFunction,
+        persistenceModule,
+        persistenceModuleKind,
+        mirrorHostProperty: statementResult.mirrorHostProperty,
+      };
+    }
+
+    return undefined;
+  }
+
+  private classifyHostStateHelperStatement(
+    targetFile: SourceFile,
+    statement: Node,
+    hostParamName: string,
+    stateObjectProperty: string,
+    updatedProperty: string,
+    settingsValueNames: ReadonlySet<string>,
+    settingsParamName: string,
+    sourceFilePath: string,
+    targetFilePath: string,
+    persistenceFunction: string | undefined,
+  ): HostStateHelperStatementResult {
+    const normalizedSettingsValue = this.extractSettingsAliasVariable(
+      statement,
+      settingsValueNames,
+      settingsParamName,
+      updatedProperty,
+    );
+    if (normalizedSettingsValue) {
+      return { kind: 'alias', settingsValueName: normalizedSettingsValue };
+    }
+
+    const hostStateAssignment = [...settingsValueNames].some((settingsValueName) =>
+      this.extractHostStateAssignment(statement, hostParamName, stateObjectProperty, settingsValueName),
+    );
+    if (hostStateAssignment) {
+      return { kind: 'host_assignment' };
+    }
+
+    const persistenceCall = [...settingsValueNames]
+      .map((settingsValueName) =>
+        this.extractImportedPersistenceCall(targetFile, statement, settingsValueName, sourceFilePath, targetFilePath),
+      )
+      .find(Boolean);
+    if (persistenceCall) {
+      return {
+        kind: 'persistence',
+        persistenceFunction: persistenceCall.persistenceFunction,
+        persistenceModule: persistenceCall.persistenceModule,
+        persistenceModuleKind: persistenceCall.persistenceModuleKind,
+      };
+    }
+
+    const mirrorAssignment = this.extractMirrorHostPropertyAssignment(
+      statement,
+      hostParamName,
+      stateObjectProperty,
+      updatedProperty,
+      settingsValueNames,
+    );
+    if (mirrorAssignment) {
+      return { kind: 'mirror', mirrorHostProperty: mirrorAssignment };
+    }
+
+    if (
+      this.isIgnorableHostStateHelperStatement(
+        targetFile,
+        statement,
+        hostParamName,
+        stateObjectProperty,
+        updatedProperty,
+        settingsValueNames,
+        persistenceFunction,
+      )
+    ) {
+      return { kind: 'ignored' };
+    }
+
+    return { kind: 'reject' };
   }
 
   private createExtractSharedPlan(sourceFile: string, targetFile: string, symbols: string[]): ExtractSharedFixPlan {
@@ -1088,7 +1266,7 @@ export class SemanticAnalyzer {
     return `pkg:${packageName}`;
   }
 
-  private getPersistenceModuleKey(moduleKind: 'package' | 'repo_file', persistenceModule: string): string {
+  private getPersistenceModuleKey(moduleKind: PersistenceModuleKind, persistenceModule: string): string {
     return moduleKind === 'repo_file'
       ? this.createRepoFileModuleKey(persistenceModule)
       : this.createPackageModuleKey(persistenceModule);
@@ -1317,7 +1495,7 @@ export class SemanticAnalyzer {
     | {
         persistenceFunction: string;
         persistenceModule: string;
-        persistenceModuleKind: 'package' | 'repo_file';
+        persistenceModuleKind: PersistenceModuleKind;
       }
     | undefined {
     if (!Node.isExpressionStatement(statement)) {
@@ -1356,6 +1534,7 @@ export class SemanticAnalyzer {
     hostParamName: string,
     stateObjectProperty: string,
     updatedProperty: string,
+    settingsValueNames: ReadonlySet<string>,
   ): string | undefined {
     if (!Node.isExpressionStatement(statement)) {
       return undefined;
@@ -1372,16 +1551,134 @@ export class SemanticAnalyzer {
       !leftChain ||
       leftChain.length !== 2 ||
       leftChain[0] !== hostParamName ||
-      !rightChain ||
-      rightChain.length !== 3 ||
-      rightChain[0] !== hostParamName ||
-      rightChain[1] !== stateObjectProperty ||
-      rightChain[2] !== updatedProperty
+      !this.isMirrorAssignmentSource(
+        rightChain,
+        hostParamName,
+        stateObjectProperty,
+        updatedProperty,
+        settingsValueNames,
+      )
     ) {
       return undefined;
     }
 
     return leftChain[1];
+  }
+
+  private isMirrorAssignmentSource(
+    rightChain: string[] | undefined,
+    hostParamName: string,
+    stateObjectProperty: string,
+    updatedProperty: string,
+    settingsValueNames: ReadonlySet<string>,
+  ): boolean {
+    if (!rightChain) {
+      return false;
+    }
+
+    return (
+      (rightChain.length === 3 &&
+        rightChain[0] === hostParamName &&
+        rightChain[1] === stateObjectProperty &&
+        rightChain[2] === updatedProperty) ||
+      (rightChain.length === 2 && settingsValueNames.has(rightChain[0] ?? '') && rightChain[1] === updatedProperty)
+    );
+  }
+
+  private extractSettingsAliasVariable(
+    statement: Node,
+    settingsValueNames: ReadonlySet<string>,
+    settingsParamName: string,
+    updatedProperty: string,
+  ): string | undefined {
+    if (!Node.isVariableStatement(statement)) {
+      return undefined;
+    }
+
+    const declaration = statement.getDeclarations()[0];
+    const initializer = declaration?.getInitializer();
+    if (
+      !declaration ||
+      declaration.getNameNode().getKind() !== SyntaxKind.Identifier ||
+      !initializer ||
+      !Node.isObjectLiteralExpression(initializer)
+    ) {
+      return undefined;
+    }
+
+    const hasSettingsSpread = initializer
+      .getProperties()
+      .some(
+        (property) => Node.isSpreadAssignment(property) && settingsValueNames.has(property.getExpression().getText()),
+      );
+    if (!hasSettingsSpread) {
+      return undefined;
+    }
+
+    const writesUpdatedProperty = initializer
+      .getProperties()
+      .some((property) => Node.isPropertyAssignment(property) && property.getName() === updatedProperty);
+    if (!writesUpdatedProperty) {
+      return undefined;
+    }
+
+    const initializerText = initializer.getText();
+    if (!initializerText.includes(settingsParamName)) {
+      return undefined;
+    }
+
+    return declaration.getName();
+  }
+
+  private isIgnorableHostStateHelperStatement(
+    sourceFile: SourceFile,
+    statement: Node,
+    hostParamName: string,
+    stateObjectProperty: string,
+    updatedProperty: string,
+    settingsValueNames: ReadonlySet<string>,
+    persistenceFunction: string | undefined,
+  ): boolean {
+    if (Node.isReturnStatement(statement) || Node.isThrowStatement(statement)) {
+      return false;
+    }
+
+    const propertyChains = statement
+      .getDescendantsOfKind(SyntaxKind.PropertyAccessExpression)
+      .map((expression) => this.getPropertyAccessChain(expression))
+      .filter((chain): chain is string[] => Array.isArray(chain));
+
+    if (
+      propertyChains.some(
+        (chain) =>
+          chain[0] === hostParamName &&
+          chain[1] === stateObjectProperty &&
+          (chain.length > 2 || chain[2] === updatedProperty),
+      )
+    ) {
+      return false;
+    }
+
+    if (propertyChains.some((chain) => settingsValueNames.has(chain[0] ?? '') && chain[1] === updatedProperty)) {
+      return false;
+    }
+
+    for (const callExpression of statement.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+      const callee = callExpression.getExpression();
+      if (!Node.isIdentifier(callee)) {
+        continue;
+      }
+
+      if (persistenceFunction && callee.getText() === persistenceFunction) {
+        return false;
+      }
+
+      if (this.findImportedBinding(sourceFile, callee.getText())) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   private findImportedBinding(
@@ -1419,7 +1716,7 @@ export class SemanticAnalyzer {
   ): {
     persistenceFunction: string;
     persistenceModule: string;
-    persistenceModuleKind: 'package' | 'repo_file';
+    persistenceModuleKind: PersistenceModuleKind;
   } {
     if (!moduleSpecifier.startsWith('.') && !path.isAbsolute(moduleSpecifier)) {
       return {

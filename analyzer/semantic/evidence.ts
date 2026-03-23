@@ -11,9 +11,14 @@ const STRATEGIES: PlanningStrategy[] = ['import_type', 'direct_import', 'extract
 
 const STRATEGY_LABELS: Record<PlanningStrategy, string[]> = {
   import_type: ['import_type', 'type_runtime_split'],
-  direct_import: ['direct_import', 'barrel_reexport_cleanup'],
+  direct_import: ['direct_import', 'barrel_reexport_cleanup', 'public_seam_bypass', 'export_graph_rewrite'],
   extract_shared: ['extract_shared', 'leaf_cluster_extraction'],
-  host_state_update: ['host_owned_state_update', 'stateful_singleton_split'],
+  host_state_update: [
+    'host_owned_state_update',
+    'stateful_singleton_split',
+    'ownership_localization',
+    'internal_surface_split',
+  ],
 };
 
 const CLASSIFICATION_TO_STRATEGY: Partial<Record<string, PlanningStrategy>> = {

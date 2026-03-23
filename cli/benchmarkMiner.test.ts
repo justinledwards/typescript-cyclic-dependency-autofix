@@ -108,6 +108,7 @@ describe('mineBenchmarkCasesFromRepo', () => {
       binary_files: 0,
       js_ts_files_changed: 2,
       non_js_ts_files_changed: 0,
+      touches_public_api_seam: false,
     });
     expect(JSON.parse(importTypeCase?.validation_signals ?? '{}')).toMatchObject({
       search_terms: expect.any(Number),
@@ -122,6 +123,54 @@ describe('mineBenchmarkCasesFromRepo', () => {
     });
     expect(importTypeCase?.notes).toContain('matched terms:');
     expect(importTypeCase?.notes).toContain('training language scope: js/ts');
+
+    db.close();
+  });
+
+  it('derives public seam labels and patch-shape features from changed file paths', async () => {
+    const db = createDatabase(':memory:');
+    initSchema(db);
+
+    const git: GitAdapter = {
+      raw: async (args: string[]) => {
+        const key = args.join(' ');
+        if (key === 'remote get-url origin') {
+          return 'git@github.com:acme/widget.git';
+        }
+        if (key === 'log --all --no-merges --max-count=1000 --pretty=format:%H%x1f%s%x1f%b%x1e') {
+          return 'abc123\u001FNostr: remove plugin API import cycle\u001FBypass the plugin-sdk seam.\u001E';
+        }
+        if (key === 'show --name-status --find-renames --format= abc123') {
+          return 'M\textensions/nostr/src/channel.ts\nM\tsrc/plugin-sdk/nostr.ts\n';
+        }
+        if (key === 'show --numstat --find-renames --format= abc123') {
+          return '4\t2\textensions/nostr/src/channel.ts\n2\t1\tsrc/plugin-sdk/nostr.ts\n';
+        }
+
+        throw new Error(`Unexpected git call: ${key}`);
+      },
+    };
+
+    // eslint-disable-next-line sonarjs/publicly-writable-directories
+    await mineBenchmarkCasesFromRepo('/tmp/acme-widget', {
+      database: db,
+      git,
+      maxMatches: 10,
+    });
+
+    const [benchmarkCase] = createStatements(db).getBenchmarkCasesByRepository.all('acme/widget') as Array<{
+      strategy_labels: string;
+      diff_features: string;
+    }>;
+
+    expect(JSON.parse(benchmarkCase.strategy_labels)).toEqual(
+      expect.arrayContaining(['public_seam_bypass', 'export_graph_rewrite']),
+    );
+    expect(JSON.parse(benchmarkCase.diff_features)).toMatchObject({
+      touches_public_api_seam: true,
+      touches_plugin_sdk_surface: true,
+      touches_api_shim: false,
+    });
 
     db.close();
   });

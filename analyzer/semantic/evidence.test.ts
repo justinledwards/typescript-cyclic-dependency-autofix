@@ -42,6 +42,15 @@ describe('historical evidence loading', () => {
           },
         }),
       },
+      {
+        strategy_labels: JSON.stringify(['public_seam_bypass', 'ownership_localization']),
+        validation_signals: JSON.stringify({
+          repository_profile: {
+            package_manager: 'pnpm',
+            workspace_mode: 'workspace',
+          },
+        }),
+      },
     ];
     evidenceFixtures.acceptanceBenchmarkCases = [
       {
@@ -109,13 +118,13 @@ describe('historical evidence loading', () => {
       validationCommandCount: 3,
     });
 
-    expect(snapshot.totalBenchmarkCases).toBe(1);
+    expect(snapshot.totalBenchmarkCases).toBe(2);
     expect(snapshot.totalAcceptanceBenchmarkCases).toBe(3);
     expect(snapshot.totalReviewedPatches).toBe(2);
     expect(snapshot.totalValidatedPatches).toBe(2);
     expect(snapshot.strategies.direct_import).toMatchObject({
-      benchmarkMatches: 1,
-      profileMatches: 2,
+      benchmarkMatches: 2,
+      profileMatches: 4,
       approvedReviews: 1,
       passedValidations: 1,
     });
@@ -131,6 +140,10 @@ describe('historical evidence loading', () => {
       failedValidations: 1,
       newCyclesIntroducedFailures: 1,
       repoValidationFailures: 1,
+    });
+    expect(snapshot.strategies.host_state_update).toMatchObject({
+      benchmarkMatches: 1,
+      profileMatches: 2,
     });
   });
 });

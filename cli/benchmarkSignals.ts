@@ -1,6 +1,7 @@
 const DEFAULT_SEARCH_TERMS = [
   'circular dependency',
   'cyclic dependency',
+  'circular import',
   'import type',
   'type-only',
   'barrel',
@@ -25,7 +26,49 @@ export function normalizeSearchTerms(terms: string[]): string[] {
 
 export function findMatchedTerms(text: string, searchTerms: string[]): string[] {
   const lowerText = text.toLowerCase();
-  return searchTerms.filter((term) => lowerText.includes(term));
+  const matchedTerms = new Set(searchTerms.filter((term) => lowerText.includes(term)));
+
+  if (containsWholeWord(lowerText, 'circular')) {
+    matchedTerms.add('circular');
+  }
+  if (containsWholeWord(lowerText, 'cyclic')) {
+    matchedTerms.add('cyclic');
+  }
+  if (containsCycleContext(lowerText, ['import'])) {
+    matchedTerms.add('import cycle');
+  }
+  if (containsCycleContext(lowerText, ['export', 're-export', 'reexport'])) {
+    matchedTerms.add('export cycle');
+  }
+  if (containsCycleContext(lowerText, ['barrel'])) {
+    matchedTerms.add('barrel cycle');
+  }
+  if (containsCycleContext(lowerText, ['dependency', 'dependencies'])) {
+    matchedTerms.add('dependency cycle');
+  }
+  if (containsCycleContext(lowerText, ['break'])) {
+    matchedTerms.add('break cycle');
+  }
+
+  return [...matchedTerms];
+}
+
+function containsWholeWord(text: string, word: string): boolean {
+  return new RegExp(String.raw`\b${escapeForRegex(word)}\b`, 'i').test(text);
+}
+
+function containsCycleContext(text: string, keywords: string[]): boolean {
+  return text.split('\n').some((segment) => {
+    if (!/\bcycles?\b/i.test(segment)) {
+      return false;
+    }
+
+    return keywords.some((keyword) => segment.includes(keyword));
+  });
+}
+
+function escapeForRegex(value: string): string {
+  return value.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 }
 
 export function classifyStrategyLabels(commitText: string): string[] {

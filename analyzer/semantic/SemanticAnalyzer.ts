@@ -10,7 +10,7 @@ import {
   SyntaxKind,
 } from 'ts-morph';
 import type { Classification } from '../../db/index.js';
-import { createEmptyHistoricalEvidenceSnapshot } from './evidence.js';
+import { createEmptyHistoricalEvidenceSnapshot, loadHistoricalEvidence } from './evidence.js';
 import { extractCycleFeatures } from './features.js';
 import { buildCycleGraph, findDirectImportPlanFromGraph } from './graph.js';
 import {
@@ -55,6 +55,7 @@ type HostStateHelperStatementResult =
 
 export class SemanticAnalyzer {
   public project: Project;
+  private readonly historicalEvidenceCache = new Map<string, HistoricalEvidenceSnapshot>();
 
   constructor(
     public repoPath: string,
@@ -155,6 +156,14 @@ export class SemanticAnalyzer {
       sideEffectModules: graphSummary.metrics.sideEffectModuleCount,
       symbolSccs: graphSummary.metrics.symbolSccCount,
     };
+    const features = extractCycleFeatures({
+      uniqueFiles,
+      cycleShape,
+      graphSummary,
+      cycleSignals,
+      repositoryProfile: this.plannerOptions.repositoryProfile,
+    });
+    const historicalEvidence = this.resolveHistoricalEvidence(features);
 
     return {
       cyclePath,
@@ -165,16 +174,35 @@ export class SemanticAnalyzer {
       importsBToA,
       cycleSignals,
       repositoryProfile: this.plannerOptions.repositoryProfile,
-      historicalEvidence: this.plannerOptions.historicalEvidence ?? createEmptyHistoricalEvidenceSnapshot(),
+      historicalEvidence,
       graphSummary,
-      features: extractCycleFeatures({
-        uniqueFiles,
-        cycleShape,
-        graphSummary,
-        cycleSignals,
-        repositoryProfile: this.plannerOptions.repositoryProfile,
-      }),
+      features,
     };
+  }
+
+  private resolveHistoricalEvidence(features: CyclePlanningContext['features']): HistoricalEvidenceSnapshot {
+    if (this.plannerOptions.historicalEvidence) {
+      return this.plannerOptions.historicalEvidence;
+    }
+
+    if (!this.plannerOptions.repositoryProfile) {
+      return createEmptyHistoricalEvidenceSnapshot();
+    }
+
+    const cacheKey = JSON.stringify({
+      packageManager: this.plannerOptions.repositoryProfile.packageManager,
+      workspaceMode: this.plannerOptions.repositoryProfile.workspaceMode,
+      validationCommandCount: this.plannerOptions.repositoryProfile.validationCommandCount,
+      patternCategories: features.patternCategories ?? [],
+    });
+    const cached = this.historicalEvidenceCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const snapshot = loadHistoricalEvidence(this.plannerOptions.repositoryProfile, features.patternCategories ?? []);
+    this.historicalEvidenceCache.set(cacheKey, snapshot);
+    return snapshot;
   }
 
   private getStrategyDefinitions(): StrategyDefinition[] {

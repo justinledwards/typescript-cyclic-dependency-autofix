@@ -214,7 +214,10 @@ describe('SemanticAnalyzer', () => {
       cycleShape: 'multi_file',
       selectedStrategy: 'direct_import',
       selectedClassification: 'autofix_direct_import',
-      selectedScore: 0.9,
+      selectedScore: 0.91,
+      features: {
+        patternCategories: expect.arrayContaining(['barrel_reexport_cleanup']),
+      },
       graphSummary: {
         metrics: {
           barrelModuleCount: 1,
@@ -582,12 +585,15 @@ describe('SemanticAnalyzer', () => {
     const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'a.ts']);
 
     expect(result.classification).toBe('autofix_host_state_update');
-    expect(result.upstreamabilityScore).toBe(0.89);
+    expect(result.upstreamabilityScore).toBe(0.92);
     expect(result.planner).toMatchObject({
       cycleShape: 'two_file',
       selectedStrategy: 'host_state_update',
       selectedClassification: 'autofix_host_state_update',
-      selectedScore: 0.89,
+      selectedScore: 0.92,
+      features: {
+        patternCategories: expect.arrayContaining(['ownership_localization', 'host_owned_state_update']),
+      },
     });
     expect(result.plan).toEqual({
       kind: 'host_state_update',

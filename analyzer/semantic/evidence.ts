@@ -49,6 +49,7 @@ interface BenchmarkSignalsShape {
 interface AcceptanceFeatureVectorShape {
   packageManager?: PlannerRepositoryProfile['packageManager'];
   workspaceMode?: PlannerRepositoryProfile['workspaceMode'];
+  patternCategories?: string[];
 }
 
 interface ReplayBundleShape {
@@ -72,19 +73,22 @@ export function createEmptyHistoricalEvidenceSnapshot(): HistoricalEvidenceSnaps
   };
 }
 
-export function loadHistoricalEvidence(repositoryProfile?: PlannerRepositoryProfile): HistoricalEvidenceSnapshot {
+export function loadHistoricalEvidence(
+  repositoryProfile?: PlannerRepositoryProfile,
+  activePatternCategories: string[] = [],
+): HistoricalEvidenceSnapshot {
   const snapshot = createEmptyHistoricalEvidenceSnapshot();
   const benchmarkCases = getBenchmarkCases.all() as BenchmarkCaseDTO[];
 
   snapshot.totalBenchmarkCases = benchmarkCases.length;
   for (const benchmarkCase of benchmarkCases) {
-    applyBenchmarkCase(snapshot, benchmarkCase, repositoryProfile);
+    applyBenchmarkCase(snapshot, benchmarkCase, repositoryProfile, activePatternCategories);
   }
 
   const acceptanceBenchmarkCases = getAcceptanceBenchmarkCases.all() as AcceptanceBenchmarkCaseDTO[];
   snapshot.totalAcceptanceBenchmarkCases = acceptanceBenchmarkCases.length;
   for (const acceptanceCase of acceptanceBenchmarkCases) {
-    applyAcceptanceBenchmarkCase(snapshot, acceptanceCase, repositoryProfile);
+    applyAcceptanceBenchmarkCase(snapshot, acceptanceCase, repositoryProfile, activePatternCategories);
   }
 
   applyReviewEvidence(snapshot, loadReviewEvidenceRows());
@@ -97,9 +101,11 @@ function applyBenchmarkCase(
   snapshot: HistoricalEvidenceSnapshot,
   benchmarkCase: BenchmarkCaseDTO,
   repositoryProfile?: PlannerRepositoryProfile,
+  activePatternCategories: string[] = [],
 ): void {
   const labels = parseJsonArray(benchmarkCase.strategy_labels);
   const signals = parseBenchmarkSignals(benchmarkCase.validation_signals);
+  const activePatternSet = new Set(activePatternCategories);
 
   for (const strategy of STRATEGIES) {
     if (!labels.some((label) => STRATEGY_LABELS[strategy].includes(label))) {
@@ -108,6 +114,9 @@ function applyBenchmarkCase(
 
     const evidence = snapshot.strategies[strategy];
     evidence.benchmarkMatches += 1;
+    if (activePatternSet.size > 0 && labels.some((label) => activePatternSet.has(label))) {
+      evidence.patternMatches = (evidence.patternMatches ?? 0) + 1;
+    }
 
     if (repositoryProfile && signals.repository_profile) {
       if (signals.repository_profile.package_manager === repositoryProfile.packageManager) {
@@ -124,6 +133,7 @@ function applyAcceptanceBenchmarkCase(
   snapshot: HistoricalEvidenceSnapshot,
   benchmarkCase: AcceptanceBenchmarkCaseDTO,
   repositoryProfile?: PlannerRepositoryProfile,
+  activePatternCategories: string[] = [],
 ): void {
   const strategy = CLASSIFICATION_TO_STRATEGY[benchmarkCase.classification];
   if (!strategy) {
@@ -132,6 +142,7 @@ function applyAcceptanceBenchmarkCase(
 
   const evidence = snapshot.strategies[strategy];
   const featureVector = parseAcceptanceFeatureVector(benchmarkCase.feature_vector);
+  const activePatternSet = new Set(activePatternCategories);
 
   if (repositoryProfile) {
     let profileMatches = 0;
@@ -142,6 +153,12 @@ function applyAcceptanceBenchmarkCase(
       profileMatches += 1;
     }
     evidence.acceptanceProfileMatches = (evidence.acceptanceProfileMatches ?? 0) + profileMatches;
+  }
+  if (
+    activePatternSet.size > 0 &&
+    featureVector.patternCategories?.some((category) => activePatternSet.has(category))
+  ) {
+    evidence.acceptancePatternMatches = (evidence.acceptancePatternMatches ?? 0) + 1;
   }
 
   switch (benchmarkCase.acceptability) {
@@ -198,8 +215,10 @@ function createEmptyStrategyEvidence(): StrategyHistoricalEvidence {
     passedValidations: 0,
     failedValidations: 0,
     acceptedBenchmarks: 0,
+    acceptancePatternMatches: 0,
     rejectedBenchmarks: 0,
     needsReviewBenchmarks: 0,
+    patternMatches: 0,
     acceptanceProfileMatches: 0,
     semanticWrongRejections: 0,
     repoConventionsMismatchRejections: 0,

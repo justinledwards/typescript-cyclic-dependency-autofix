@@ -209,9 +209,11 @@ export function applyHistoricalEvidence(
     signals: {
       ...attempt.signals,
       historicalBenchmarkMatches: evidence.benchmarkMatches,
+      historicalPatternMatches: evidence.patternMatches ?? 0,
       historicalProfileMatches: evidence.profileMatches,
       historicalAcceptanceBenchmarks:
         (evidence.acceptedBenchmarks ?? 0) + (evidence.rejectedBenchmarks ?? 0) + (evidence.needsReviewBenchmarks ?? 0),
+      historicalAcceptancePatternMatches: evidence.acceptancePatternMatches ?? 0,
       historicalReviewedPatches: reviewedCount,
       historicalValidatedPatches: validatedCount,
       historicalStructuralFailures: structuralFailureCount,
@@ -237,6 +239,12 @@ function applyBenchmarkEvidence(
     );
   }
 
+  if ((evidence.patternMatches ?? 0) > 0) {
+    const patternBonus = Math.min(0.04, (evidence.patternMatches ?? 0) * 0.01);
+    accumulator.score += patternBonus;
+    accumulator.breakdown.push(`+${patternBonus.toFixed(2)} from benchmark cases with matching graph-pattern labels`);
+  }
+
   if (evidence.profileMatches > 0) {
     const profileBonus = Math.min(0.02, evidence.profileMatches * 0.01);
     accumulator.score += profileBonus;
@@ -248,6 +256,14 @@ function applyBenchmarkEvidence(
     accumulator.score += acceptanceProfileBonus;
     accumulator.breakdown.push(
       `+${acceptanceProfileBonus.toFixed(2)} from acceptance benchmark cases with matching repo profiles`,
+    );
+  }
+
+  if ((evidence.acceptancePatternMatches ?? 0) > 0) {
+    const acceptancePatternBonus = Math.min(0.03, (evidence.acceptancePatternMatches ?? 0) * 0.01);
+    accumulator.score += acceptancePatternBonus;
+    accumulator.breakdown.push(
+      `+${acceptancePatternBonus.toFixed(2)} from acceptance benchmark cases with matching graph-pattern labels`,
     );
   }
 }
@@ -376,14 +392,70 @@ function applyFeatureBiases(
   attempt: StrategyAttempt,
   features: CycleFeatureVector,
 ): void {
-  if (attempt.strategy === 'direct_import' && features.hasBarrelFile) {
+  switch (attempt.strategy) {
+    case 'direct_import': {
+      applyDirectImportFeatureBiases(accumulator, features);
+      break;
+    }
+    case 'extract_shared': {
+      applyExtractSharedFeatureBiases(accumulator, features);
+      break;
+    }
+    case 'host_state_update': {
+      applyHostStateFeatureBiases(accumulator, features);
+      break;
+    }
+    default: {
+      break;
+    }
+  }
+}
+
+function applyDirectImportFeatureBiases(accumulator: ScoreAccumulator, features: CycleFeatureVector): void {
+  if (features.hasBarrelFile) {
     accumulator.score += 0.01;
     accumulator.breakdown.push('+0.01 because the cycle already contains a barrel entrypoint');
   }
 
-  if (attempt.strategy === 'extract_shared' && features.validationCommandCount > 2) {
+  if ((features.cyclePublicSeamEdgeCount ?? 0) > 0) {
+    accumulator.score += 0.03;
+    accumulator.breakdown.push('+0.03 because the cycle currently routes through a public API seam');
+  }
+
+  if ((features.exportEdgeCount ?? 0) > 0) {
+    accumulator.score += 0.01;
+    accumulator.breakdown.push('+0.01 because the cycle already exposes a re-export graph to simplify');
+  }
+}
+
+function applyExtractSharedFeatureBiases(accumulator: ScoreAccumulator, features: CycleFeatureVector): void {
+  if (features.validationCommandCount > 2) {
     accumulator.score -= 0.01;
     accumulator.breakdown.push('-0.01 because new shared modules are more fragile under heavier repo validation');
+  }
+
+  if ((features.cyclePublicSeamEdgeCount ?? 0) > 0) {
+    accumulator.score -= 0.03;
+    accumulator.breakdown.push('-0.03 because public seam cycles are usually cleaner as import-surface rewrites');
+  }
+
+  if ((features.ownershipLocalizationEdgeCount ?? 0) > 0) {
+    accumulator.score -= 0.03;
+    accumulator.breakdown.push('-0.03 because setter-shaped cycle edges are usually cleaner as ownership localization');
+  }
+}
+
+function applyHostStateFeatureBiases(accumulator: ScoreAccumulator, features: CycleFeatureVector): void {
+  if ((features.ownershipLocalizationEdgeCount ?? 0) > 0) {
+    accumulator.score += 0.03;
+    accumulator.breakdown.push('+0.03 because the cycle already includes setter-shaped ownership-localization edges');
+  }
+
+  if ((features.cyclePublicSeamEdgeCount ?? 0) > 0) {
+    accumulator.score -= 0.02;
+    accumulator.breakdown.push(
+      '-0.02 because public seam cycles usually want import-surface rewrites, not localized setters',
+    );
   }
 }
 

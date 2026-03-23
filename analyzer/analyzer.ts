@@ -2,7 +2,6 @@ import path from 'node:path';
 import { cruise } from 'dependency-cruiser';
 import { profileRepository } from '../cli/repoProfile.js';
 import { canonicalizeCyclePath } from './cycleNormalization.js';
-import { loadHistoricalEvidence } from './semantic/evidence.js';
 import type { PlannerRepositoryProfile } from './semantic.js';
 import { type SemanticAnalysisResult, SemanticAnalyzer } from './semantic.js';
 
@@ -15,7 +14,6 @@ export interface CircularDependency {
 export async function analyzeRepository(repoPath: string): Promise<CircularDependency[]> {
   const resolvedRepoPath = path.resolve(repoPath);
   const repositoryProfile = await safePlannerRepositoryProfile(resolvedRepoPath);
-  const historicalEvidence = loadHistoricalEvidence(repositoryProfile);
 
   try {
     const result = await cruise([resolvedRepoPath], {
@@ -41,7 +39,6 @@ export async function analyzeRepository(repoPath: string): Promise<CircularDepen
     const circularDependencies: CircularDependency[] = [];
     const semanticAnalyzer = new SemanticAnalyzer(resolvedRepoPath, {
       repositoryProfile,
-      historicalEvidence,
     });
 
     const output = result.output;

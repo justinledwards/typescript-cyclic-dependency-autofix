@@ -691,6 +691,98 @@ describe('SemanticAnalyzer', () => {
     });
   });
 
+  it('detects host_state_update when setter helpers call imported presentation utilities', () => {
+    analyzer.project.createSourceFile(
+      '/dummy/repo/a.ts',
+      `
+      import { setLastActiveSessionKey } from './b';
+      export const runA = (host: unknown) => setLastActiveSessionKey(host, ' next ');
+    `,
+    );
+    analyzer.project.createSourceFile(
+      '/dummy/repo/b.ts',
+      `
+      import { runA } from './a';
+      import { applyBorderRadius } from './borderRadius';
+      import { saveSettings } from './storage';
+      import { applyResolvedTheme, resolveTheme } from './theme';
+
+      export function applySettings(
+        host: {
+          settings: { lastActiveSessionKey: string; sessionKey: string; theme: string; themeMode: string; borderRadius: number };
+          applySessionKey: string;
+          theme: string;
+          themeMode: string;
+        },
+        next: { lastActiveSessionKey: string; sessionKey: string; theme: string; themeMode: string; borderRadius: number },
+      ) {
+        const normalized = {
+          ...next,
+          lastActiveSessionKey: next.lastActiveSessionKey?.trim() || next.sessionKey.trim() || 'main',
+        };
+        host.settings = normalized;
+        saveSettings(normalized);
+        if (next.theme !== host.theme || next.themeMode !== host.themeMode) {
+          host.theme = next.theme;
+          host.themeMode = next.themeMode;
+          applyResolvedTheme(host, resolveTheme(next.theme, next.themeMode));
+        }
+        applyBorderRadius(next.borderRadius);
+        host.applySessionKey = host.settings.lastActiveSessionKey;
+      }
+
+      export function setLastActiveSessionKey(
+        host: {
+          settings: { lastActiveSessionKey: string; sessionKey: string; theme: string; themeMode: string; borderRadius: number };
+          applySessionKey: string;
+          theme: string;
+          themeMode: string;
+        },
+        next: string,
+      ) {
+        const trimmed = next.trim();
+        if (!trimmed) {
+          return;
+        }
+        if (host.settings.lastActiveSessionKey === trimmed) {
+          return;
+        }
+        applySettings(host, { ...host.settings, lastActiveSessionKey: trimmed });
+      }
+
+      export const runB = () => runA({
+        settings: { lastActiveSessionKey: 'main', sessionKey: 'main', theme: 'claw', themeMode: 'system', borderRadius: 50 },
+        applySessionKey: 'main',
+        theme: 'claw',
+        themeMode: 'system',
+      });
+    `,
+    );
+    analyzer.project.createSourceFile('/dummy/repo/storage.ts', 'export function saveSettings(_next: unknown) {}\n');
+    analyzer.project.createSourceFile(
+      '/dummy/repo/theme.ts',
+      "export function applyResolvedTheme(_host: unknown, _resolved: string) {}\nexport function resolveTheme(theme: string, mode: string) { return theme + ':' + mode; }\n",
+    );
+    analyzer.project.createSourceFile(
+      '/dummy/repo/borderRadius.ts',
+      'export function applyBorderRadius(_value: number) {}\n',
+    );
+
+    const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'a.ts']);
+
+    expect(result.classification).toBe('autofix_host_state_update');
+    expect(result.planner?.selectedStrategy).toBe('host_state_update');
+    expect(result.upstreamabilityScore).toBeGreaterThan(0.85);
+    expect(result.plan).toMatchObject({
+      kind: 'host_state_update',
+      importedFunction: 'setLastActiveSessionKey',
+      persistenceFunction: 'saveSettings',
+      updatedProperty: 'lastActiveSessionKey',
+      mirrorHostProperty: 'applySessionKey',
+      trimValue: true,
+    });
+  });
+
   it('identifies suggest_manual for non-type cycles with unsupported declarations', () => {
     analyzer.project.createSourceFile(
       '/dummy/repo/a.ts',

@@ -1061,7 +1061,6 @@ export class SemanticAnalyzer {
 
     if (
       this.isIgnorableHostStateHelperStatement(
-        targetFile,
         statement,
         hostParamName,
         stateObjectProperty,
@@ -1631,7 +1630,6 @@ export class SemanticAnalyzer {
   }
 
   private isIgnorableHostStateHelperStatement(
-    sourceFile: SourceFile,
     statement: Node,
     hostParamName: string,
     stateObjectProperty: string,
@@ -1670,10 +1668,6 @@ export class SemanticAnalyzer {
       }
 
       if (persistenceFunction && callee.getText() === persistenceFunction) {
-        return false;
-      }
-
-      if (this.findImportedBinding(sourceFile, callee.getText())) {
         return false;
       }
     }

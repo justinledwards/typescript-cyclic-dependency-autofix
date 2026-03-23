@@ -235,6 +235,52 @@ describe('SemanticAnalyzer', () => {
     });
   });
 
+  it('detects direct_import for mixed public API seams that re-export a safe leaf symbol', () => {
+    analyzer.project.createSourceFile(
+      '/dummy/repo/app.ts',
+      `
+      import { Foo } from './api';
+      export const appValue = Foo + 1;
+    `,
+    );
+    analyzer.project.createSourceFile(
+      '/dummy/repo/api.ts',
+      `
+      export { Foo } from './foo';
+      export { Bar } from './bar';
+      export const apiVersion = '1';
+    `,
+    );
+    analyzer.project.createSourceFile('/dummy/repo/foo.ts', 'export const Foo = 1;');
+    analyzer.project.createSourceFile(
+      '/dummy/repo/bar.ts',
+      `
+      import { appValue } from './app';
+      export const Bar = appValue + 1;
+    `,
+    );
+
+    const result = analyzer.analyzeCycle(['app.ts', 'api.ts', 'bar.ts', 'app.ts']);
+
+    expect(result.classification).toBe('autofix_direct_import');
+    expect(result.planner?.selectedStrategy).toBe('direct_import');
+    expect(result.planner?.rankedCandidates[0]?.signals).toMatchObject({
+      bypassesBarrel: true,
+      bypassesPublicSeam: true,
+    });
+    expect(result.plan).toEqual({
+      kind: 'direct_import',
+      imports: [
+        {
+          sourceFile: 'app.ts',
+          barrelFile: 'api.ts',
+          targetFile: 'foo.ts',
+          symbols: ['Foo'],
+        },
+      ],
+    });
+  });
+
   it('adjusts candidate scoring with historical evidence and repository features', () => {
     analyzer = new SemanticAnalyzer('/dummy/repo', {
       repositoryProfile: {
@@ -536,12 +582,12 @@ describe('SemanticAnalyzer', () => {
     const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'a.ts']);
 
     expect(result.classification).toBe('autofix_host_state_update');
-    expect(result.upstreamabilityScore).toBe(0.87);
+    expect(result.upstreamabilityScore).toBe(0.89);
     expect(result.planner).toMatchObject({
       cycleShape: 'two_file',
       selectedStrategy: 'host_state_update',
       selectedClassification: 'autofix_host_state_update',
-      selectedScore: 0.87,
+      selectedScore: 0.89,
     });
     expect(result.plan).toEqual({
       kind: 'host_state_update',
@@ -555,6 +601,93 @@ describe('SemanticAnalyzer', () => {
       updatedProperty: 'lastActiveSessionKey',
       mirrorHostProperty: 'applySessionKey',
       trimValue: true,
+    });
+  });
+
+  it('prefers host_state_update over extract_shared when the setter helper has unrelated side effects', () => {
+    analyzer.project.createSourceFile(
+      '/dummy/repo/a.ts',
+      `
+      import { setLastActiveSessionKey } from './b';
+      export const runA = (host: unknown) => setLastActiveSessionKey(host, ' next ');
+    `,
+    );
+    analyzer.project.createSourceFile(
+      '/dummy/repo/b.ts',
+      `
+      import { runA } from './a';
+      import { saveSettings } from './storage';
+
+      function applyResolvedTheme(_host: unknown, _theme: string) {}
+      function applyBorderRadius(_radius: number) {}
+
+      export function applySettings(
+        host: {
+          settings: { lastActiveSessionKey: string; sessionKey: string; theme: string; themeMode: string; borderRadius: number };
+          applySessionKey: string;
+          theme: string;
+          themeMode: string;
+        },
+        next: { lastActiveSessionKey: string; sessionKey: string; theme: string; themeMode: string; borderRadius: number },
+      ) {
+        const normalized = {
+          ...next,
+          lastActiveSessionKey: next.lastActiveSessionKey?.trim() || next.sessionKey.trim() || 'main',
+        };
+        host.settings = normalized;
+        saveSettings(normalized);
+        if (next.theme !== host.theme || next.themeMode !== host.themeMode) {
+          host.theme = next.theme;
+          host.themeMode = next.themeMode;
+          applyResolvedTheme(host, next.theme);
+        }
+        applyBorderRadius(next.borderRadius);
+        host.applySessionKey = host.settings.lastActiveSessionKey;
+      }
+
+      export function setLastActiveSessionKey(
+        host: {
+          settings: { lastActiveSessionKey: string; sessionKey: string; theme: string; themeMode: string; borderRadius: number };
+          applySessionKey: string;
+          theme: string;
+          themeMode: string;
+        },
+        next: string,
+      ) {
+        const trimmed = next.trim();
+        if (!trimmed) {
+          return;
+        }
+        if (host.settings.lastActiveSessionKey === trimmed) {
+          return;
+        }
+        applySettings(host, { ...host.settings, lastActiveSessionKey: trimmed });
+      }
+
+      export const runB = () => runA({
+        settings: { lastActiveSessionKey: 'main', sessionKey: 'main', theme: 'claw', themeMode: 'system', borderRadius: 50 },
+        applySessionKey: 'main',
+        theme: 'claw',
+        themeMode: 'system',
+      });
+    `,
+    );
+    analyzer.project.createSourceFile('/dummy/repo/storage.ts', 'export function saveSettings(_next: unknown) {}\n');
+
+    const result = analyzer.analyzeCycle(['a.ts', 'b.ts', 'a.ts']);
+
+    expect(result.classification).toBe('autofix_host_state_update');
+    expect(result.planner?.selectedStrategy).toBe('host_state_update');
+    expect(result.planner?.rankedCandidates.map((attempt) => attempt.strategy)).toEqual(
+      expect.arrayContaining(['host_state_update', 'extract_shared']),
+    );
+    expect(result.upstreamabilityScore).toBeGreaterThan(0.85);
+    expect(result.plan).toMatchObject({
+      kind: 'host_state_update',
+      importedFunction: 'setLastActiveSessionKey',
+      persistenceFunction: 'saveSettings',
+      updatedProperty: 'lastActiveSessionKey',
+      mirrorHostProperty: 'applySessionKey',
     });
   });
 

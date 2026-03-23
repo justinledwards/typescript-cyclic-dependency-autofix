@@ -71,8 +71,9 @@ function escapeForRegex(value: string): string {
   return value.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 }
 
-export function classifyStrategyLabels(commitText: string): string[] {
+export function classifyStrategyLabels(commitText: string, changedPaths: string[] = []): string[] {
   const lowerText = commitText.toLowerCase();
+  const normalizedPaths = changedPaths.map((filePath) => filePath.trim().toLowerCase()).filter(Boolean);
   const labels = new Set<string>();
 
   if (/import\s+type|type-only|type only/.test(lowerText)) {
@@ -93,6 +94,43 @@ export function classifyStrategyLabels(commitText: string): string[] {
   if (/setter|state update|host-owned|stateful singleton|dependency inversion/.test(lowerText)) {
     labels.add('host_owned_state_update');
     labels.add('stateful_singleton_split');
+  }
+
+  if (
+    /break .*settings cycle|helper cycle|ownership|caller already owns|locali[sz]e/.test(lowerText) ||
+    (/break cycle|import cycle|dependency cycle/.test(lowerText) &&
+      normalizedPaths.some((filePath) => filePath.includes('/storage.') || filePath.includes('/settings.')))
+  ) {
+    labels.add('ownership_localization');
+    labels.add('host_owned_state_update');
+  }
+
+  const touchesPublicSeam = normalizedPaths.some(
+    (filePath) =>
+      filePath.endsWith('/api.ts') ||
+      filePath.endsWith('/api.js') ||
+      filePath.includes('/plugin-sdk/') ||
+      filePath.includes('/setup-surface.') ||
+      filePath.includes('/setup-core.'),
+  );
+  if (
+    /plugin-sdk|reexport cycle|re-export cycle|public api|setup cycle|import cycle|export cycle/.test(lowerText) ||
+    touchesPublicSeam
+  ) {
+    labels.add('public_seam_bypass');
+    labels.add('export_graph_rewrite');
+  }
+
+  if (
+    /internalize|internal surface|plugin-sdk-internal/.test(lowerText) ||
+    normalizedPaths.some(
+      (filePath) =>
+        filePath.includes('/plugin-sdk-internal/') ||
+        filePath.endsWith('/internal.ts') ||
+        filePath.endsWith('/internal.js'),
+    )
+  ) {
+    labels.add('internal_surface_split');
   }
 
   if (/internal\.(ts|js)|module loading order|internal entrypoint/.test(lowerText)) {

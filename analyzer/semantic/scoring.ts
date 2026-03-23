@@ -39,12 +39,27 @@ export function scoreDirectImportPlan(importPlans: DirectImportFixPlan['imports'
   signals: Record<string, StrategySignalValue>;
 } {
   const touchedFiles = new Set(importPlans.map((plan) => plan.sourceFile));
+  const seamBypassCount = importPlans.filter((plan) => {
+    const normalizedBarrel = plan.barrelFile.toLowerCase();
+    return (
+      normalizedBarrel.includes('/api.') ||
+      normalizedBarrel.startsWith('api.') ||
+      normalizedBarrel.includes('/plugin-sdk/') ||
+      normalizedBarrel.includes('/setup-surface.') ||
+      normalizedBarrel.startsWith('setup-surface.') ||
+      normalizedBarrel.includes('/setup-core.') ||
+      normalizedBarrel.startsWith('setup-core.')
+    );
+  }).length;
   const score = clampScore(0.89 - Math.max(0, touchedFiles.size - 1) * 0.04);
   return {
     score,
     breakdown: [
       'base 0.89 for removing a barrel hop',
       touchedFiles.size > 1 ? `-0.04 for touching ${touchedFiles.size} files` : 'no penalty for single touched file',
+      seamBypassCount > 0
+        ? `semantic note: ${seamBypassCount} import(s) bypass a public re-export seam`
+        : 'no public-seam bypass signal',
     ],
     signals: {
       touchedFiles: touchedFiles.size,
@@ -52,6 +67,7 @@ export function scoreDirectImportPlan(importPlans: DirectImportFixPlan['imports'
       introducesNewFile: false,
       preservesSourceExports: true,
       bypassesBarrel: true,
+      bypassesPublicSeam: seamBypassCount > 0,
     },
   };
 }
@@ -62,11 +78,14 @@ export function scoreExtractSharedPlan(plan: ExtractSharedFixPlan): {
   signals: Record<string, StrategySignalValue>;
 } {
   const symbolNamedSharedFile = plan.symbols.length === 1 && path.basename(plan.sharedFile).includes(plan.symbols[0]);
+  const setterLikeExtraction =
+    plan.symbols.length === 1 && /^(set|update|apply|assign)[A-Z_]/.test(plan.symbols[0] ?? '');
   const score = clampScore(
     0.68 +
       (plan.preserveSourceExports ? 0.08 : 0) +
       (plan.symbols.length === 1 ? 0.06 : 0) +
       (symbolNamedSharedFile ? 0.04 : 0) -
+      (setterLikeExtraction ? 0.05 : 0) -
       Math.max(0, plan.symbols.length - 1) * 0.03,
   );
   return {
@@ -78,12 +97,16 @@ export function scoreExtractSharedPlan(plan: ExtractSharedFixPlan): {
         ? '+0.06 for single-symbol extraction'
         : `-${Math.max(0, plan.symbols.length - 1) * 0.03} for extracting multiple symbols`,
       symbolNamedSharedFile ? '+0.04 for a symbol-driven shared filename' : 'no filename clarity bonus',
+      setterLikeExtraction
+        ? '-0.05 because setter-like helpers usually read better as localized ownership updates'
+        : 'no setter-localization penalty',
     ],
     signals: {
       touchedFiles: 3,
       symbolCount: plan.symbols.length,
       introducesNewFile: true,
       preservesSourceExports: plan.preserveSourceExports,
+      setterLikeExtraction,
       sharedFile: plan.sharedFile,
       sourceFile: plan.sourceFile,
       targetFile: plan.targetFile,
@@ -96,11 +119,11 @@ export function scoreHostStateUpdatePlan(plan: HostStateUpdateFixPlan): {
   breakdown: string[];
   signals: Record<string, StrategySignalValue>;
 } {
-  const score = clampScore(0.85 + (plan.mirrorHostProperty ? 0.01 : 0) + (plan.trimValue ? 0.01 : 0));
+  const score = clampScore(0.87 + (plan.mirrorHostProperty ? 0.01 : 0) + (plan.trimValue ? 0.01 : 0));
   return {
     score,
     breakdown: [
-      'base 0.85 for removing a cross-module state setter without introducing a new file',
+      'base 0.87 for localizing a cross-module state setter without introducing a new file',
       plan.mirrorHostProperty ? '+0.01 for preserving a mirrored host field update' : 'no mirrored-host bonus',
       plan.trimValue ? '+0.01 for preserving value normalization in the localized helper' : 'no normalization bonus',
     ],

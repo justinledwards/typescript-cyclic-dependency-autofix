@@ -68,6 +68,13 @@ interface DiffFeatures {
   binary_files: number;
   js_ts_files_changed: number;
   non_js_ts_files_changed: number;
+  touches_public_api_seam: boolean;
+  touches_plugin_sdk_surface: boolean;
+  touches_internal_surface: boolean;
+  touches_setup_surface: boolean;
+  touches_setup_core: boolean;
+  touches_api_shim: boolean;
+  touches_shared_module: boolean;
 }
 
 interface ChangedFileSummary {
@@ -125,7 +132,7 @@ export async function mineBenchmarkCasesFromRepo(
       continue;
     }
 
-    const strategyLabels = classifyStrategyLabels(commitText);
+    const strategyLabels = classifyStrategyLabels(commitText, diffSummary.changedFiles.allPaths);
     const url = buildCommitUrl(repository, commit.commitSha);
 
     statements.addBenchmarkCase.run({
@@ -250,6 +257,7 @@ async function collectDiffSummary(git: GitAdapter, commitSha: string): Promise<D
       binary_files: binaryFiles,
       js_ts_files_changed: changedFiles.jsTsPaths.length,
       non_js_ts_files_changed: changedFiles.nonJsTsPaths.length,
+      ...buildPatchShapeDiffFeatures(changedFiles),
     },
     changedFiles,
   };
@@ -378,6 +386,45 @@ function summarizeChangedFiles(paths: string[]): ChangedFileSummary {
     allPaths: uniquePaths,
     jsTsPaths,
     nonJsTsPaths,
+  };
+}
+
+function buildPatchShapeDiffFeatures(
+  changedFiles: ChangedFileSummary,
+): Omit<
+  DiffFeatures,
+  | 'files_changed'
+  | 'additions'
+  | 'deletions'
+  | 'new_files'
+  | 'renamed_files'
+  | 'modified_files'
+  | 'binary_files'
+  | 'js_ts_files_changed'
+  | 'non_js_ts_files_changed'
+> {
+  const normalizedPaths = changedFiles.allPaths.map((filePath) => filePath.toLowerCase());
+
+  return {
+    touches_public_api_seam: normalizedPaths.some(
+      (filePath) =>
+        filePath.endsWith('/api.ts') ||
+        filePath.endsWith('/api.js') ||
+        filePath.includes('/plugin-sdk/') ||
+        filePath.includes('/setup-surface.') ||
+        filePath.includes('/setup-core.'),
+    ),
+    touches_plugin_sdk_surface: normalizedPaths.some((filePath) => filePath.includes('/plugin-sdk/')),
+    touches_internal_surface: normalizedPaths.some(
+      (filePath) =>
+        filePath.includes('/plugin-sdk-internal/') ||
+        filePath.endsWith('/internal.ts') ||
+        filePath.endsWith('/internal.js'),
+    ),
+    touches_setup_surface: normalizedPaths.some((filePath) => filePath.includes('/setup-surface.')),
+    touches_setup_core: normalizedPaths.some((filePath) => filePath.includes('/setup-core.')),
+    touches_api_shim: normalizedPaths.some((filePath) => filePath.endsWith('/api.ts') || filePath.endsWith('/api.js')),
+    touches_shared_module: normalizedPaths.some((filePath) => filePath.includes('.shared.')),
   };
 }
 

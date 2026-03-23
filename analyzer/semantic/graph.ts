@@ -113,7 +113,7 @@ export function findDirectImportPlanFromGraph(
   for (const importEdge of graphSummary.importEdges) {
     const candidate = tryBuildDirectImportCandidate(importEdge, cycleFileSet, moduleByFile, resolutionMap);
     if (!candidate) {
-      sawBarrelScenario ||= isBarrelCycleEdge(importEdge, cycleFileSet, moduleByFile);
+      sawBarrelScenario ||= isReexportCycleEdge(importEdge, cycleFileSet, moduleByFile, resolutionMap);
       ambiguousResolution ||= isAmbiguousBarrelEdge(importEdge, cycleFileSet, moduleByFile, resolutionMap);
       continue;
     }
@@ -575,7 +575,7 @@ function tryBuildDirectImportCandidate(
   moduleByFile: Map<string, GraphModuleSummary>,
   resolutionMap: Map<string, GraphExportResolution>,
 ): NonNullable<DirectImportSearchResult['plan']>[number] | undefined {
-  if (!isBarrelCycleEdge(importEdge, cycleFileSet, moduleByFile)) {
+  if (!isReexportCycleEdge(importEdge, cycleFileSet, moduleByFile, resolutionMap)) {
     return undefined;
   }
 
@@ -621,7 +621,7 @@ function isAmbiguousBarrelEdge(
   moduleByFile: Map<string, GraphModuleSummary>,
   resolutionMap: Map<string, GraphExportResolution>,
 ): boolean {
-  if (!isBarrelCycleEdge(importEdge, cycleFileSet, moduleByFile)) {
+  if (!isReexportCycleEdge(importEdge, cycleFileSet, moduleByFile, resolutionMap)) {
     return false;
   }
 
@@ -635,16 +635,39 @@ function isAmbiguousBarrelEdge(
   });
 }
 
-function isBarrelCycleEdge(
+function isReexportCycleEdge(
   importEdge: GraphImportEdge,
   cycleFileSet: Set<string>,
   moduleByFile: Map<string, GraphModuleSummary>,
+  resolutionMap: Map<string, GraphExportResolution>,
 ): boolean {
   if (!cycleFileSet.has(importEdge.from) || !cycleFileSet.has(importEdge.to)) {
     return false;
   }
 
-  return moduleByFile.get(importEdge.to)?.moduleKind === 'pure_barrel';
+  const targetModule = moduleByFile.get(importEdge.to);
+  if (!targetModule || !targetModule.hasReExports || targetModule.hasTopLevelSideEffects) {
+    return false;
+  }
+
+  if (targetModule.moduleKind === 'pure_barrel') {
+    return true;
+  }
+
+  return importEdge.symbols.some((symbol) => {
+    if (symbol === 'default' || symbol === '*') {
+      return false;
+    }
+
+    const resolution = resolutionMap.get(toResolutionKey(importEdge.to, symbol));
+    return Boolean(
+      resolution &&
+        !resolution.ambiguous &&
+        resolution.targetFile &&
+        resolution.targetFile !== importEdge.to &&
+        !cycleFileSet.has(resolution.targetFile),
+    );
+  });
 }
 
 function tarjanScc(nodes: GraphSymbolNode[], edges: GraphSymbolEdge[]): string[][] {

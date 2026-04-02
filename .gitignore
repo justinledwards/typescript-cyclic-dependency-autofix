@@ -38,3 +38,8 @@ worktrees/
 # Testing
 coverage/
 .test-fixtures/
+
+# Local datasets, exports, and model artifacts
+.datasets/
+exports/
+artifacts/

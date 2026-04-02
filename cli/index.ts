@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { analyzeRepository } from '../analyzer/analyzer.js';
+import { getMlDisagreementReport } from '../db/mlReports.js';
 import {
   getPatternReport,
   getStrategyPerformanceReport,
@@ -17,6 +18,12 @@ import { exportApprovedPatches } from './exportPatches.js';
 import { exportTrainingData, type TrainingDataFormat } from './exportTrainingData.js';
 import { type BenchmarkDatasetFormat, importBenchmarkDataset } from './importBenchmarkDataset.js';
 import { getOperationalMetrics } from './metrics.js';
+import { readLatestMlArtifact } from './mlArtifacts.js';
+import { clusterCyclePatterns } from './mlCluster.js';
+import { compareMlRanker } from './mlCompare.js';
+import { evaluateMlRanker } from './mlEvaluate.js';
+import { prepareMlDatasetsForTraining } from './mlPrepare.js';
+import { trainMlRanker } from './mlTrainRanker.js';
 import {
   createConcurrencyLimiter,
   createStructuredLogger,
@@ -360,6 +367,77 @@ export function createProgram(): Command {
     });
 
   program
+    .command('ml:prepare')
+    .description('Prepare model-ready cycle and candidate datasets from stored observations')
+    .option('--output-dir <path>', 'Directory to write prepared ML datasets into')
+    .action(async (options: { outputDir?: string }) => {
+      try {
+        console.log(
+          JSON.stringify(
+            await prepareMlDatasetsForTraining({
+              outputDir: options.outputDir,
+            }),
+            null,
+            2,
+          ),
+        );
+      } catch (error) {
+        console.error('Failed to prepare ML datasets:', error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('ml:cluster')
+    .description('Cluster stored cycle observations into recurring pattern groups')
+    .option('--min-clusters <count>', 'Smallest cluster count to evaluate', parseInteger)
+    .option('--max-clusters <count>', 'Largest cluster count to evaluate', parseInteger)
+    .action(async (options: { minClusters?: number; maxClusters?: number }) => {
+      try {
+        console.log(JSON.stringify(await clusterCyclePatterns(options), null, 2));
+      } catch (error) {
+        console.error('Failed to cluster cycle patterns:', error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('ml:train-ranker')
+    .description('Train the advisory acceptability and validation rankers on stored candidate data')
+    .action(async () => {
+      try {
+        console.log(JSON.stringify(await trainMlRanker(), null, 2));
+      } catch (error) {
+        console.error('Failed to train ML ranker:', error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('ml:evaluate')
+    .description('Run repo-holdout evaluation for the advisory rankers')
+    .action(async () => {
+      try {
+        console.log(JSON.stringify(await evaluateMlRanker(), null, 2));
+      } catch (error) {
+        console.error('Failed to evaluate ML ranker:', error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('ml:compare')
+    .description('Compare heuristic-vs-model candidate choices and persist advisory scores')
+    .action(async () => {
+      try {
+        console.log(JSON.stringify(await compareMlRanker(), null, 2));
+      } catch (error) {
+        console.error('Failed to compare heuristic and model rankings:', error);
+        process.exit(1);
+      }
+    });
+
+  program
     .command('report:patterns')
     .description('Print recurring cycle-shape, failure-cluster, and unsupported-cluster summaries')
     .action(() => {
@@ -367,6 +445,43 @@ export function createProgram(): Command {
         console.log(JSON.stringify(getPatternReport(), null, 2));
       } catch (error) {
         console.error('Failed to build the pattern report:', error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('report:clusters')
+    .description('Print the latest stored cluster summary')
+    .action(async () => {
+      try {
+        console.log(JSON.stringify(await readLatestMlArtifact('clusters'), null, 2));
+      } catch (error) {
+        console.error('Failed to load the cluster report:', error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('report:ml-disagreements')
+    .description('Print the latest stored heuristic-vs-model disagreement report')
+    .option('--model-version <version>', 'Restrict the report to a specific model version')
+    .action((options: { modelVersion?: string }) => {
+      try {
+        console.log(JSON.stringify(getMlDisagreementReport(undefined, options.modelVersion), null, 2));
+      } catch (error) {
+        console.error('Failed to build the ML disagreement report:', error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('report:ranker-metrics')
+    .description('Print the latest stored ML ranker metrics')
+    .action(async () => {
+      try {
+        console.log(JSON.stringify(await readLatestMlArtifact('evaluation'), null, 2));
+      } catch (error) {
+        console.error('Failed to load the ML ranker metrics:', error);
         process.exit(1);
       }
     });

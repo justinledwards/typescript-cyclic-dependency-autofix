@@ -48,6 +48,12 @@ The project should keep moving toward:
 - `pnpm run scan:all`
 - `pnpm run retry:failed`
 - `pnpm run export:patches`
+- `pnpm run export:training-data`
+- `pnpm run ml:prepare`
+- `pnpm run ml:cluster`
+- `pnpm run ml:train-ranker`
+- `pnpm run ml:evaluate`
+- `pnpm run ml:compare`
 
 ## Engineering Rules
 
@@ -71,7 +77,7 @@ Unsupported cases are still useful data.
 
 - Safety and correctness come from structural analysis and validation.
 - Ranking decides which already-safe candidates are most promising.
-- ML, if added later, is only a ranking aid and must not replace correctness checks.
+- ML is an advisory ranking aid and must not replace correctness checks.
 
 ### 3. Prefer reusable graph/search layers over one-off heuristics
 

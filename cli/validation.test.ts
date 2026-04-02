@@ -118,6 +118,57 @@ describe('validateGeneratedPatch', () => {
     expect(result.summary).toContain('TypeScript check passed');
   });
 
+  it('executes repo-profiled tsc commands through the resolved TypeScript compiler', async () => {
+    const repoPath = await createRepo({
+      'package.json': JSON.stringify(
+        {
+          name: 'seed-direct-import',
+        },
+        null,
+        2,
+      ),
+      'tsconfig.json': JSON.stringify(
+        {
+          compilerOptions: {
+            target: 'ES2022',
+            module: 'NodeNext',
+            moduleResolution: 'NodeNext',
+            strict: true,
+          },
+        },
+        null,
+        2,
+      ),
+      'a.ts': 'export const a = 1;\n',
+      'b.ts': 'export const b = a + 1;\n',
+    });
+
+    vi.spyOn(analyzerModule, 'analyzeRepository').mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    const generatedPatch: GeneratedPatch = {
+      patchText: 'diff',
+      touchedFiles: ['b.ts'],
+      validationStatus: 'pending',
+      validationSummary: 'pending',
+      fileSnapshots: [
+        {
+          path: 'b.ts',
+          before: 'export const b = a + 1;\n',
+          after: "import { a } from './a';\nexport const b = a + 1;\n",
+        },
+      ],
+    };
+
+    const result = await validateGeneratedPatch(
+      repoPath,
+      { type: 'circular', path: ['a.ts', 'b.ts', 'a.ts'] },
+      generatedPatch,
+    );
+
+    expect(result.status).toBe('passed');
+    expect(result.summary).toContain('Repo-native validation passed (npx tsc --noEmit --project tsconfig.json)');
+  }, 15_000);
+
   it('fails when the original cycle is still present after applying the rewrite', async () => {
     const repoPath = await createRepo({
       'a.ts': 'export const a = 1;\n',

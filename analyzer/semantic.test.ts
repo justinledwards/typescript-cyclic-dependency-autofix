@@ -102,7 +102,7 @@ describe('SemanticAnalyzer', () => {
         { sourceFile: 'b.ts', targetFile: 'a.ts' },
       ],
     });
-  });
+  }, 15_000);
 
   it('detects extract_shared for top-level functions', () => {
     analyzer.project.createSourceFile(

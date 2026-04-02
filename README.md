@@ -117,6 +117,14 @@ pnpm run scan:all
 pnpm run retry:failed
 pnpm run export:patches
 pnpm run export:training-data -- --format parquet
+pnpm run ml:prepare
+pnpm run ml:cluster
+pnpm run ml:train-ranker
+pnpm run ml:evaluate
+pnpm run ml:compare
+pnpm run report:clusters
+pnpm run report:ml-disagreements
+pnpm run report:ranker-metrics
 ```
 
 The runtime application still uses SQLite for scans, patches, and review state. Offline analytics should prefer DuckDB over exported Parquet datasets so ranking experiments and pattern mining stay fast without complicating the live app database.
@@ -124,6 +132,31 @@ The runtime application still uses SQLite for scans, patches, and review state. 
 Training export is intentionally JS/TS-only. Benchmark cases mined from git history are only kept when the matching commit touched JavaScript or TypeScript files, and the exporter excludes benchmark rows that are not explicitly marked as JS/TS training-eligible.
 
 External dataset import follows the same rule. Imported benchmark rows are only stored when they touch JS/TS files, and by default they must also look cycle-related based on the benchmark search terms so the benchmark table stays useful for circular-dependency ranking instead of filling with unrelated bugfixes.
+
+## Advisory ML Workflow
+
+The ML layer is now real, but intentionally offline and advisory-only.
+
+Use it in this order:
+
+1. `pnpm run export:training-data -- --format parquet`
+   - export the current SQLite-backed observation, candidate, and benchmark state
+2. `pnpm run ml:prepare`
+   - flatten the exported data into model-ready `cycle_patterns` and `candidate_ranking` datasets under `exports/ml/`
+3. `pnpm run ml:cluster`
+   - discover recurring cycle groups from cycle-level features
+4. `pnpm run ml:train-ranker`
+   - train baseline logistic-ranker artifacts under `artifacts/ml/`
+5. `pnpm run ml:evaluate`
+   - measure repo-holdout accuracy and top-1 acceptability against the heuristic baseline
+6. `pnpm run ml:compare`
+   - persist advisory candidate scores and report heuristic-vs-model disagreements
+
+The ML pipeline never generates patches by itself and never overrides runtime safety checks. It is only used to:
+
+- surface recurring cycle/fix clusters
+- score already-safe candidates
+- show where heuristic ranking likely needs new strategies or better evidence
 
 ## Engineering Principles
 

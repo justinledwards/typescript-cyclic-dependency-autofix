@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { analyzeRepository } from '../analyzer/analyzer.js';
+import { getMlDisagreementReport } from '../db/mlReports.js';
 import {
   getPatternReport,
   getStrategyPerformanceReport,
@@ -20,6 +21,12 @@ import { exportTrainingData } from './exportTrainingData.js';
 import { importBenchmarkDataset } from './importBenchmarkDataset.js';
 import { createProgram } from './index.js';
 import { getOperationalMetrics } from './metrics.js';
+import { readLatestMlArtifact } from './mlArtifacts.js';
+import { clusterCyclePatterns } from './mlCluster.js';
+import { compareMlRanker } from './mlCompare.js';
+import { evaluateMlRanker } from './mlEvaluate.js';
+import { prepareMlDatasetsForTraining } from './mlPrepare.js';
+import { trainMlRanker } from './mlTrainRanker.js';
 import { profileRepository } from './repoProfile.js';
 import { rescoreStoredCycles, retryFailedPatchCandidates } from './rescore.js';
 import { scanAllTrackedRepositories } from './scanAll.js';
@@ -114,6 +121,29 @@ vi.mock('../db/observationReports.js', () => ({
       reasons: ['Barrel re-export graph is ambiguous or side-effectful.'],
     },
   ]),
+}));
+
+vi.mock('../db/mlReports.js', () => ({
+  getMlDisagreementReport: vi.fn().mockReturnValue({
+    modelVersion: 'ml-test',
+    totalCycles: 2,
+    disagreements: 1,
+    rows: [
+      {
+        cycleObservationId: 12,
+        modelVersion: 'ml-test',
+        repositorySlug: 'acme/widget',
+        normalizedPath: 'a.ts -> b.ts -> a.ts',
+        heuristicStrategy: 'extract_shared',
+        modelStrategy: 'host_state_update',
+        heuristicCandidateObservationId: 1,
+        modelCandidateObservationId: 2,
+        heuristicScore: 0.41,
+        modelScore: 0.88,
+        disagreement: true,
+      },
+    ],
+  }),
 }));
 
 vi.mock('./scanner.js', () => ({
@@ -499,6 +529,128 @@ vi.mock('./metrics.js', () => ({
       ignored: 0,
       approvalRate: 0.5,
     },
+  }),
+}));
+
+vi.mock('./mlPrepare.js', () => ({
+  prepareMlDatasetsForTraining: vi.fn().mockResolvedValue({
+    manifestPath: path.join(exportedDir, 'ml', 'manifest.json'),
+    manifest: {
+      schemaVersion: 1,
+      summary: {
+        cyclePatterns: 3,
+        candidateRanking: 6,
+      },
+    },
+  }),
+}));
+
+vi.mock('./mlCluster.js', () => ({
+  clusterCyclePatterns: vi.fn().mockResolvedValue({
+    version: 'ml-test',
+    repositoryCount: 2,
+    totalRows: 8,
+    selectedClusterCount: 2,
+    selectedSilhouetteScore: 0.61,
+    clusters: [
+      {
+        clusterId: 0,
+        size: 4,
+        dominantPatternLabels: ['ownership_localization'],
+      },
+      {
+        clusterId: 1,
+        size: 4,
+        dominantPatternLabels: ['public_seam_bypass'],
+      },
+    ],
+  }),
+}));
+
+vi.mock('./mlTrainRanker.js', () => ({
+  trainMlRanker: vi.fn().mockResolvedValue({
+    version: 'ml-test',
+    trainingSummary: {
+      totalCandidateRows: 10,
+      trainRows: 8,
+      holdoutRows: 2,
+    },
+    evaluation: {
+      top1Acceptability: {
+        heuristic: 0.4,
+        model: 0.7,
+        cycleCount: 3,
+        beatsHeuristic: true,
+      },
+    },
+  }),
+}));
+
+vi.mock('./mlEvaluate.js', () => ({
+  evaluateMlRanker: vi.fn().mockResolvedValue({
+    version: 'ml-test',
+    holdoutRepositories: ['acme/widget'],
+    acceptability: {
+      accuracy: 0.75,
+      precision: 1,
+      recall: 0.5,
+      positiveRate: 0.5,
+      negativeRate: 0.5,
+      totalRows: 4,
+    },
+    validation: {
+      accuracy: 1,
+      precision: 1,
+      recall: 1,
+      positiveRate: 0.5,
+      negativeRate: 0.5,
+      totalRows: 4,
+    },
+    top1Acceptability: {
+      heuristic: 0.4,
+      model: 0.7,
+      cycleCount: 3,
+      beatsHeuristic: true,
+    },
+  }),
+}));
+
+vi.mock('./mlCompare.js', () => ({
+  compareMlRanker: vi.fn().mockResolvedValue({
+    version: 'ml-test',
+    totalScoredCandidates: 6,
+    totalCycles: 3,
+    disagreements: 1,
+    rows: [
+      {
+        cycleObservationId: 12,
+        disagreement: true,
+      },
+    ],
+  }),
+}));
+
+vi.mock('./mlArtifacts.js', () => ({
+  readLatestMlArtifact: vi.fn().mockImplementation(async (kind: string) => {
+    if (kind === 'clusters') {
+      return {
+        version: 'ml-test',
+        selectedClusterCount: 2,
+        clusters: [],
+      };
+    }
+    return {
+      version: 'ml-test',
+      holdoutRepositories: ['acme/widget'],
+      evaluation: {
+        top1Acceptability: {
+          heuristic: 0.4,
+          model: 0.7,
+          cycleCount: 3,
+          beatsHeuristic: true,
+        },
+      },
+    };
   }),
 }));
 
@@ -898,6 +1050,89 @@ describe('CLI', () => {
     consoleSpy.mockRestore();
   });
 
+  it('ml:prepare command prints ML dataset manifest JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'ml:prepare', '--output-dir', path.join(exportedDir, 'ml')]);
+
+    expect(vi.mocked(prepareMlDatasetsForTraining)).toHaveBeenCalledWith({
+      outputDir: path.join(exportedDir, 'ml'),
+    });
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      manifestPath: path.join(exportedDir, 'ml', 'manifest.json'),
+    });
+    consoleSpy.mockRestore();
+  });
+
+  it('ml:cluster command prints cluster summary as JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'ml:cluster', '--min-clusters', '2', '--max-clusters', '4']);
+
+    expect(vi.mocked(clusterCyclePatterns)).toHaveBeenCalledWith({
+      minClusters: 2,
+      maxClusters: 4,
+    });
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      version: 'ml-test',
+      selectedClusterCount: 2,
+    });
+    consoleSpy.mockRestore();
+  });
+
+  it('ml:train-ranker command prints ranker artifact JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'ml:train-ranker']);
+
+    expect(vi.mocked(trainMlRanker)).toHaveBeenCalledWith();
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      version: 'ml-test',
+      trainingSummary: {
+        totalCandidateRows: 10,
+      },
+    });
+    consoleSpy.mockRestore();
+  });
+
+  it('ml:evaluate command prints holdout metrics as JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'ml:evaluate']);
+
+    expect(vi.mocked(evaluateMlRanker)).toHaveBeenCalledWith();
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      version: 'ml-test',
+      top1Acceptability: {
+        model: 0.7,
+      },
+    });
+    consoleSpy.mockRestore();
+  });
+
+  it('ml:compare command prints heuristic-vs-model disagreements as JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'ml:compare']);
+
+    expect(vi.mocked(compareMlRanker)).toHaveBeenCalledWith();
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      totalScoredCandidates: 6,
+      disagreements: 1,
+    });
+    consoleSpy.mockRestore();
+  });
+
   it('report:patterns command prints the pattern report as JSON', async () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const program = createProgram();
@@ -911,6 +1146,51 @@ describe('CLI', () => {
         cycleObservations: 3,
         candidateObservations: 7,
       },
+    });
+    consoleSpy.mockRestore();
+  });
+
+  it('report:clusters command prints the latest cluster artifact as JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'report:clusters']);
+
+    expect(vi.mocked(readLatestMlArtifact)).toHaveBeenCalledWith('clusters');
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      version: 'ml-test',
+      selectedClusterCount: 2,
+    });
+    consoleSpy.mockRestore();
+  });
+
+  it('report:ml-disagreements command prints the latest disagreement report as JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'report:ml-disagreements', '--model-version', 'ml-test']);
+
+    expect(vi.mocked(getMlDisagreementReport)).toHaveBeenCalledWith(undefined, 'ml-test');
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      modelVersion: 'ml-test',
+      disagreements: 1,
+    });
+    consoleSpy.mockRestore();
+  });
+
+  it('report:ranker-metrics command prints the latest ranker metrics as JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync(['node', 'test', 'report:ranker-metrics']);
+
+    expect(vi.mocked(readLatestMlArtifact)).toHaveBeenCalledWith('evaluation');
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      version: 'ml-test',
+      holdoutRepositories: ['acme/widget'],
     });
     consoleSpy.mockRestore();
   });
@@ -1260,9 +1540,17 @@ describe('CLI', () => {
     expect(commandNames).toContain('profile:repo');
     expect(commandNames).toContain('mine:corpus');
     expect(commandNames).toContain('mine:repo-history');
+    expect(commandNames).toContain('ml:prepare');
+    expect(commandNames).toContain('ml:cluster');
+    expect(commandNames).toContain('ml:train-ranker');
+    expect(commandNames).toContain('ml:evaluate');
+    expect(commandNames).toContain('ml:compare');
     expect(commandNames).toContain('scan:all');
     expect(commandNames).toContain('metrics:report');
     expect(commandNames).toContain('report:patterns');
+    expect(commandNames).toContain('report:clusters');
+    expect(commandNames).toContain('report:ml-disagreements');
+    expect(commandNames).toContain('report:ranker-metrics');
     expect(commandNames).toContain('report:strategy-performance');
     expect(commandNames).toContain('report:unsupported-clusters');
     expect(commandNames).toContain('rescore');

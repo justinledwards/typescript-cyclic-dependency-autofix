@@ -598,6 +598,8 @@ function buildHostStateUpdateHelper(plan: HostStateUpdateFixPlan): string {
   const normalizedValueName = plan.trimValue ? 'trimmed' : 'next';
   const hostPropertyGuard = plan.mirrorHostProperty ? ` || !('${plan.mirrorHostProperty}' in host)` : '';
   const mirrorHostTypeSegment = plan.mirrorHostProperty ? `; ${plan.mirrorHostProperty}: string` : '';
+  const stateType = `{ ${plan.updatedProperty}: string } & Record<string, unknown>`;
+  const hostType = `{ ${plan.stateObjectProperty}: ${stateType}${mirrorHostTypeSegment} } & Record<string, unknown>`;
   const lines = [
     `function ${plan.importedFunction}(host: unknown, next: string) {`,
     `  if (!host || typeof host !== 'object') {`,
@@ -606,7 +608,7 @@ function buildHostStateUpdateHelper(plan: HostStateUpdateFixPlan): string {
     `  if (!('${plan.stateObjectProperty}' in host)${hostPropertyGuard}) {`,
     `    return;`,
     `  }`,
-    `  const settingsHost = host as { ${plan.stateObjectProperty}: Parameters<typeof ${plan.persistenceFunction}>[0]${mirrorHostTypeSegment} };`,
+    `  const settingsHost = host as ${hostType};`,
   ];
 
   if (plan.trimValue) {
@@ -617,10 +619,10 @@ function buildHostStateUpdateHelper(plan: HostStateUpdateFixPlan): string {
     `  if (!${normalizedValueName} || String(settingsHost.${plan.stateObjectProperty}.${plan.updatedProperty}) === ${normalizedValueName}) {`,
     `    return;`,
     `  }`,
-    `  const settings = {`,
+    `  const settings: ${stateType} = {`,
     `    ...settingsHost.${plan.stateObjectProperty},`,
     `    ${plan.updatedProperty}: ${normalizedValueName},`,
-    `  } as Parameters<typeof ${plan.persistenceFunction}>[0];`,
+    `  };`,
     `  settingsHost.${plan.stateObjectProperty} = settings;`,
   );
 

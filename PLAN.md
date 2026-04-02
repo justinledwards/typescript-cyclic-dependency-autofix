@@ -146,6 +146,19 @@ A pattern is considered discovered when there is:
 
 ML is a ranking mechanism, not a correctness mechanism.
 
+### Current advisory ML surface
+
+The repo now has a first offline advisory ML loop:
+
+- `export:training-data` writes model-ready base exports
+- `ml:prepare` derives `cycle_patterns` and `candidate_ranking` datasets
+- `ml:cluster` groups recurring cycle shapes
+- `ml:train-ranker` trains baseline logistic models
+- `ml:evaluate` reports repo-holdout metrics
+- `ml:compare` persists heuristic-vs-model disagreements for later strategy work
+
+This slice is intentionally advisory-only. Runtime promotion and patch generation still depend on structural checks and validation outcomes.
+
 ## Slice 6: Finish the Automation Boundary
 
 ### Required outcomes

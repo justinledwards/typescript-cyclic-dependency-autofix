@@ -59,6 +59,9 @@ mise install
 | `simple-git` | Clone, fetch, branch, and patch export workflows |
 | `commander` | CLI surface for scan, retry, export, and future reporting commands |
 | `@duckdb/node-api` | Offline analytics engine for converting exported training data into DuckDB-queryable Parquet datasets |
+| `ml-kmeans` | Baseline clustering for recurring cycle-pattern discovery |
+| `ml-logistic-regression` | Baseline advisory ranker for candidate acceptability and validation likelihood |
+| `ml-matrix` | Dense feature-matrix support for clustering and logistic training |
 
 ### Data and API surface
 
@@ -129,18 +132,23 @@ Planned capability, not yet a fixed dependency:
 
 ### 3. Ranking and learning
 
-The current codebase should export model-ready datasets before adding a dedicated ML dependency.
+The codebase now includes a first advisory ML layer.
 
 This means:
 
-- keep heuristic scoring as the baseline
+- keep heuristic scoring as the runtime baseline
 - store versioned features and outcomes
-- add offline dataset export first
+- export model-ready datasets first
 - keep mined benchmark samples scoped to commits that touched JS/TS files
-- analyze exported datasets with DuckDB + Parquet before introducing model tooling
-- only add model tooling when benchmark data is stable enough to justify it
+- analyze exported datasets with DuckDB + Parquet
+- train only offline advisory models from stored data
+- compare heuristic vs model ranking before considering any runtime use
 
-No ML framework is a required dependency yet by design.
+The current ML scope is intentionally conservative:
+
+- `ml-kmeans` is used for recurring cycle-pattern discovery
+- `ml-logistic-regression` is used for advisory candidate ranking
+- ML output is stored and reported, but it does not replace structural validation or runtime safety checks
 
 ## Planned Additions
 
@@ -148,7 +156,7 @@ These are planned capability areas, not locked package choices:
 
 - offline dataset export for ranking experiments
 - reporting commands and API endpoints for failure clusters and strategy performance
-- optional model training and inference tooling after the evidence pipeline is stable
+- offline advisory model training and disagreement reporting
 - richer repo-profile and validation inference
 
 ## Quality Expectations

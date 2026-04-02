@@ -7,7 +7,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['**/*.test.ts', '**/*.test.tsx'],
-    exclude: ['node_modules', '.output', '.tanstack', 'worktrees'],
+    exclude: ['node_modules', '.datasets', '.output', '.tanstack', 'artifacts', 'exports', 'worktrees'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'text-summary', 'lcov', 'html'],

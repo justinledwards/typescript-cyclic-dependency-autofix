@@ -216,7 +216,10 @@ async function runValidationCommand(
     logger.info('validation.command.started', {
       command,
     });
-    await execFileAsync(binary, args, { cwd: repoPath });
+    const compilerCommand = resolveTypeScriptCommand(trimmed);
+    await (compilerCommand
+      ? execFileAsync(process.execPath, compilerCommand, { cwd: repoPath })
+      : execFileAsync(binary, args, { cwd: repoPath }));
     logger.info('validation.command.completed', {
       command,
     });
@@ -236,6 +239,24 @@ async function runValidationCommand(
     });
     return { ok: false, command, output };
   }
+}
+
+function resolveTypeScriptCommand(command: string): string[] | null {
+  const trimmed = command.trim();
+  const normalized = trimmed.replaceAll(/\s+/g, ' ');
+  const prefixes = ['npx tsc', 'bunx tsc', 'pnpm exec tsc', 'yarn tsc', 'tsc'];
+  const prefix = prefixes.find((candidate) => normalized === candidate || normalized.startsWith(`${candidate} `));
+  if (!prefix) {
+    return null;
+  }
+
+  const tscEntrypoint = resolveTypeScriptTscEntrypoint();
+  if (!tscEntrypoint) {
+    return null;
+  }
+
+  const trailingArgs = normalized.slice(prefix.length).trim();
+  return [tscEntrypoint, ...trailingArgs.split(/\s+/).filter(Boolean)];
 }
 
 async function runTypecheckIfPresent(

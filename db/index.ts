@@ -173,6 +173,30 @@ export interface CandidateObservationDTO {
   updated_at: string;
 }
 
+export interface CandidateMlScoreDTO {
+  id: number;
+  candidate_observation_id: number;
+  model_version: string;
+  acceptability_score: number | null;
+  validation_score: number | null;
+  combined_score: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MlCycleRankingDTO {
+  id: number;
+  cycle_observation_id: number;
+  model_version: string;
+  heuristic_candidate_observation_id: number | null;
+  model_candidate_observation_id: number | null;
+  heuristic_strategy: string | null;
+  model_strategy: string | null;
+  disagreement: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export type RepositoryStatus =
   | 'queued'
   | 'downloading'
@@ -390,6 +414,36 @@ const SCHEMA_SQL = `
     UNIQUE(repository, commit_sha, normalized_path, classification)
   );
 
+  CREATE TABLE IF NOT EXISTS candidate_ml_scores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate_observation_id INTEGER NOT NULL,
+    model_version TEXT NOT NULL,
+    acceptability_score REAL,
+    validation_score REAL,
+    combined_score REAL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (candidate_observation_id) REFERENCES candidate_observations(id),
+    UNIQUE(candidate_observation_id, model_version)
+  );
+
+  CREATE TABLE IF NOT EXISTS ml_cycle_rankings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cycle_observation_id INTEGER NOT NULL,
+    model_version TEXT NOT NULL,
+    heuristic_candidate_observation_id INTEGER,
+    model_candidate_observation_id INTEGER,
+    heuristic_strategy TEXT,
+    model_strategy TEXT,
+    disagreement INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (cycle_observation_id) REFERENCES cycle_observations(id),
+    FOREIGN KEY (heuristic_candidate_observation_id) REFERENCES candidate_observations(id),
+    FOREIGN KEY (model_candidate_observation_id) REFERENCES candidate_observations(id),
+    UNIQUE(cycle_observation_id, model_version)
+  );
+
   -- Indexes
   CREATE INDEX IF NOT EXISTS idx_repositories_owner_name ON repositories(owner, name);
   CREATE INDEX IF NOT EXISTS idx_repositories_status ON repositories(status);
@@ -416,6 +470,10 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_acceptance_benchmark_repository ON acceptance_benchmark_cases(repository);
   CREATE INDEX IF NOT EXISTS idx_acceptance_benchmark_classification ON acceptance_benchmark_cases(classification);
   CREATE INDEX IF NOT EXISTS idx_acceptance_benchmark_acceptability ON acceptance_benchmark_cases(acceptability);
+  CREATE INDEX IF NOT EXISTS idx_candidate_ml_scores_model_version ON candidate_ml_scores(model_version);
+  CREATE INDEX IF NOT EXISTS idx_candidate_ml_scores_candidate_observation_id ON candidate_ml_scores(candidate_observation_id);
+  CREATE INDEX IF NOT EXISTS idx_ml_cycle_rankings_model_version ON ml_cycle_rankings(model_version);
+  CREATE INDEX IF NOT EXISTS idx_ml_cycle_rankings_disagreement ON ml_cycle_rankings(disagreement);
 `;
 
 /**
@@ -858,6 +916,64 @@ export function createStatements(database: DatabaseType) {
         updated_at = CURRENT_TIMESTAMP
       WHERE id = @id
     `),
+    upsertCandidateMlScore: database.prepare(`
+      INSERT INTO candidate_ml_scores (
+        candidate_observation_id,
+        model_version,
+        acceptability_score,
+        validation_score,
+        combined_score
+      )
+      VALUES (
+        @candidate_observation_id,
+        @model_version,
+        @acceptability_score,
+        @validation_score,
+        @combined_score
+      )
+      ON CONFLICT(candidate_observation_id, model_version) DO UPDATE SET
+        acceptability_score = excluded.acceptability_score,
+        validation_score = excluded.validation_score,
+        combined_score = excluded.combined_score,
+        updated_at = CURRENT_TIMESTAMP
+    `),
+    getCandidateMlScoresByModelVersion: database.prepare(`
+      SELECT * FROM candidate_ml_scores
+      WHERE model_version = ?
+      ORDER BY combined_score DESC, id ASC
+    `),
+    upsertMlCycleRanking: database.prepare(`
+      INSERT INTO ml_cycle_rankings (
+        cycle_observation_id,
+        model_version,
+        heuristic_candidate_observation_id,
+        model_candidate_observation_id,
+        heuristic_strategy,
+        model_strategy,
+        disagreement
+      )
+      VALUES (
+        @cycle_observation_id,
+        @model_version,
+        @heuristic_candidate_observation_id,
+        @model_candidate_observation_id,
+        @heuristic_strategy,
+        @model_strategy,
+        @disagreement
+      )
+      ON CONFLICT(cycle_observation_id, model_version) DO UPDATE SET
+        heuristic_candidate_observation_id = excluded.heuristic_candidate_observation_id,
+        model_candidate_observation_id = excluded.model_candidate_observation_id,
+        heuristic_strategy = excluded.heuristic_strategy,
+        model_strategy = excluded.model_strategy,
+        disagreement = excluded.disagreement,
+        updated_at = CURRENT_TIMESTAMP
+    `),
+    getMlCycleRankingsByModelVersion: database.prepare(`
+      SELECT * FROM ml_cycle_rankings
+      WHERE model_version = ?
+      ORDER BY disagreement DESC, id ASC
+    `),
   };
 }
 
@@ -977,6 +1093,22 @@ export const getPatchesByFixCandidateId = {
 export const addCandidateObservation = {
   run: (...args: Parameters<ReturnType<typeof createStatements>['addCandidateObservation']['run']>) =>
     getStatements().addCandidateObservation.run(...args),
+};
+export const upsertCandidateMlScore = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['upsertCandidateMlScore']['run']>) =>
+    getStatements().upsertCandidateMlScore.run(...args),
+};
+export const getCandidateMlScoresByModelVersion = {
+  all: (...args: Parameters<ReturnType<typeof createStatements>['getCandidateMlScoresByModelVersion']['all']>) =>
+    getStatements().getCandidateMlScoresByModelVersion.all(...args),
+};
+export const upsertMlCycleRanking = {
+  run: (...args: Parameters<ReturnType<typeof createStatements>['upsertMlCycleRanking']['run']>) =>
+    getStatements().upsertMlCycleRanking.run(...args),
+};
+export const getMlCycleRankingsByModelVersion = {
+  all: (...args: Parameters<ReturnType<typeof createStatements>['getMlCycleRankingsByModelVersion']['all']>) =>
+    getStatements().getMlCycleRankingsByModelVersion.all(...args),
 };
 export const getCandidateObservationsByCycleObservationId = {
   all: (

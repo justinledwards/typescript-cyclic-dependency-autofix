@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { cruise } from 'dependency-cruiser';
 import { profileRepository } from '../cli/repoProfile.js';
@@ -100,14 +101,22 @@ function normalizeModulePath(repoPath: string, modulePath: string): string {
     return path.relative(repoPath, modulePath).split(path.sep).join('/');
   }
 
+  const cwdRelativeCandidate = path.resolve(process.cwd(), modulePath);
+  if (fs.existsSync(cwdRelativeCandidate) && isWithinRepo(repoPath, cwdRelativeCandidate)) {
+    return path.relative(repoPath, cwdRelativeCandidate).split(path.sep).join('/');
+  }
+
   const repoRelativeCandidate = path.resolve(repoPath, modulePath);
-  if (isWithinRepo(repoPath, repoRelativeCandidate)) {
+  if (fs.existsSync(repoRelativeCandidate) && isWithinRepo(repoPath, repoRelativeCandidate)) {
     return path.relative(repoPath, repoRelativeCandidate).split(path.sep).join('/');
   }
 
-  const cwdRelativeCandidate = path.resolve(process.cwd(), modulePath);
   if (isWithinRepo(repoPath, cwdRelativeCandidate)) {
     return path.relative(repoPath, cwdRelativeCandidate).split(path.sep).join('/');
+  }
+
+  if (isWithinRepo(repoPath, repoRelativeCandidate)) {
+    return path.relative(repoPath, repoRelativeCandidate).split(path.sep).join('/');
   }
 
   return normalizedModulePath;

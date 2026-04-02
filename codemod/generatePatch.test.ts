@@ -203,7 +203,11 @@ describe('generatePatchForCycle', () => {
     expect(sourceSnapshot?.after).not.toContain("import { setLastActiveSessionKey } from './b';");
     expect(sourceSnapshot?.after).toMatch(/import \{ saveSettings \} from ['"]\.\/storage['"];/);
     expect(sourceSnapshot?.after).toContain('function setLastActiveSessionKey(host: unknown, next: string) {');
+    expect(sourceSnapshot?.after).not.toContain('Parameters<typeof saveSettings>[0]');
     expect(sourceSnapshot?.after).toContain('const trimmed = next.trim();');
+    expect(sourceSnapshot?.after).toContain(
+      'const settings: { lastActiveSessionKey: string } & Record<string, unknown> = {',
+    );
     expect(sourceSnapshot?.after).toContain('settingsHost.settings = settings;');
     expect(sourceSnapshot?.after).toContain('settingsHost.applySessionKey = String(settings.lastActiveSessionKey);');
     expect(sourceSnapshot?.after).toContain('saveSettings(settings);');

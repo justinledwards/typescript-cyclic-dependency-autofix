@@ -96,6 +96,8 @@ describe('db module', () => {
       expect(tableNames).toContain('benchmark_cases');
       expect(tableNames).toContain('review_decisions');
       expect(tableNames).toContain('acceptance_benchmark_cases');
+      expect(tableNames).toContain('candidate_ml_scores');
+      expect(tableNames).toContain('ml_cycle_rankings');
     });
 
     it('creates expected indexes', () => {
@@ -129,6 +131,10 @@ describe('db module', () => {
       expect(indexNames).toContain('idx_acceptance_benchmark_repository');
       expect(indexNames).toContain('idx_acceptance_benchmark_classification');
       expect(indexNames).toContain('idx_acceptance_benchmark_acceptability');
+      expect(indexNames).toContain('idx_candidate_ml_scores_model_version');
+      expect(indexNames).toContain('idx_candidate_ml_scores_candidate_observation_id');
+      expect(indexNames).toContain('idx_ml_cycle_rankings_model_version');
+      expect(indexNames).toContain('idx_ml_cycle_rankings_disagreement');
     });
 
     it('is idempotent (safe to call multiple times)', () => {

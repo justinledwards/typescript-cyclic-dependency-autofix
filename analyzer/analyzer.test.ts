@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { analyzeRepository } from './analyzer.js';
 
@@ -234,6 +237,54 @@ describe('analyzeRepository', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].path).toEqual(['src/a.ts', 'src/b.ts', 'src/a.ts']);
+
+    cwdSpy.mockRestore();
+  });
+
+  it('prefers existing cwd-relative paths for nested local checkouts inside the workspace', async () => {
+    const tempRoot = mkdtempSync(path.join(os.tmpdir(), 'analyzer-nested-repo-'));
+    const workspaceRoot = path.join(tempRoot, 'worktrees', 'main-sync');
+    const repoRoot = path.join(workspaceRoot, '.datasets', 'ml-seed', 'direct-import');
+    mkdirSync(repoRoot, { recursive: true });
+    writeFileSync(path.join(repoRoot, 'app.ts'), 'export const app = 1;');
+    writeFileSync(path.join(repoRoot, 'api.ts'), 'export const api = 1;');
+    writeFileSync(path.join(repoRoot, 'bar.ts'), 'export const bar = 1;');
+
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(workspaceRoot);
+
+    mockCruise.mockResolvedValue({
+      output: {
+        summary: {
+          violations: [
+            {
+              type: 'cycle',
+              from: '.datasets/ml-seed/direct-import/app.ts',
+              to: '.datasets/ml-seed/direct-import/api.ts',
+              rule: { name: 'no-circular', severity: 'warn' },
+              cycle: [
+                { name: '.datasets/ml-seed/direct-import/api.ts' },
+                { name: '.datasets/ml-seed/direct-import/bar.ts' },
+                { name: '.datasets/ml-seed/direct-import/app.ts' },
+              ],
+            },
+          ],
+          error: 0,
+          warn: 1,
+          info: 0,
+          ignore: 0,
+          totalCruised: 3,
+          totalDependenciesCruised: 3,
+          optionsUsed: {},
+        },
+        modules: [],
+      },
+      exitCode: 0,
+    } as unknown as IReporterOutput);
+
+    const result = await analyzeRepository(repoRoot);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].path).toEqual(['api.ts', 'bar.ts', 'app.ts', 'api.ts']);
 
     cwdSpy.mockRestore();
   });

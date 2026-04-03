@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createDatabase, createStatements, initSchema } from '../db/index.js';
 import { getMlDisagreementReport } from '../db/mlReports.js';
-import type { MlCandidateRankingRow, PreparedMlDatasets } from './ml/shared.js';
+import type { MlCandidatePreferenceRow, MlCandidateRankingRow, PreparedMlDatasets } from './ml/shared.js';
 import { compareMlRanker, evaluateMlRanker, trainMlRanker } from './mlRanker.js';
 
 vi.mock('./mlArtifacts.js', () => ({
@@ -22,11 +22,13 @@ describe('mlRanker', () => {
     const trained = await trainMlRanker({ datasets });
     expect(trained.models.acceptability).not.toBeNull();
     expect(trained.models.validation).not.toBeNull();
+    expect(trained.models.preference).not.toBeNull();
     expect(trained.trainingSummary.trainRows).toBeGreaterThan(0);
     expect(trained.trainingSummary.holdoutRows).toBeGreaterThan(0);
 
     const evaluation = await evaluateMlRanker({ datasets });
     expect(evaluation.acceptability?.accuracy ?? 0).toBeGreaterThan(0);
+    expect(evaluation.preference?.accuracy ?? 0).toBeGreaterThan(0);
     expect(evaluation.top1Acceptability.cycleCount).toBeGreaterThan(0);
   });
 
@@ -113,6 +115,7 @@ describe('mlRanker', () => {
       summary: {
         cyclePatterns: 0,
         candidateRanking: 6,
+        candidatePreferences: 6,
       },
       cyclePatterns: [],
       candidateRanking: createPreparedDatasets().candidateRanking.map((row, index) => {
@@ -153,6 +156,15 @@ describe('mlRanker', () => {
         }
         return row;
       }),
+      candidatePreferences: createPreparedDatasets().candidatePreferences.map((row) => ({
+        ...row,
+        repositorySlug: row.repositorySlug === 'repo/c' ? 'acme/widget' : row.repositorySlug,
+        cycleGroupKey:
+          row.cycleGroupKey === 'cycle-c' ? 'acme/widget:abc123:src/a.ts -> src/b.ts -> src/a.ts' : row.cycleGroupKey,
+        cycleObservationId: row.cycleObservationId === 5 ? cycleObservationId : row.cycleObservationId,
+        preferredCandidateObservationId: remapCandidateObservationId(row.preferredCandidateObservationId),
+        rejectedCandidateObservationId: remapCandidateObservationId(row.rejectedCandidateObservationId),
+      })),
     };
 
     const comparison = await compareMlRanker({ database: db, datasets });
@@ -160,8 +172,10 @@ describe('mlRanker', () => {
 
     const scoreRows = db.prepare('SELECT * FROM candidate_ml_scores').all() as Array<{
       candidate_observation_id: number;
+      preference_score: number | null;
     }>;
     expect(scoreRows).toHaveLength(2);
+    expect(scoreRows.every((row) => typeof row.preference_score === 'number')).toBe(true);
 
     const rankingRows = db.prepare('SELECT * FROM ml_cycle_rankings').all() as Array<{ disagreement: number }>;
     expect(rankingRows).toHaveLength(1);
@@ -179,6 +193,7 @@ function createPreparedDatasets(): PreparedMlDatasets {
     summary: {
       cyclePatterns: 0,
       candidateRanking: 6,
+      candidatePreferences: 6,
     },
     cyclePatterns: [],
     candidateRanking: [
@@ -188,6 +203,41 @@ function createPreparedDatasets(): PreparedMlDatasets {
       createCandidateRow('candidate-observation:4', 'repo/b', 'cycle-b', 2, 'host_state_update', 1, 1, false),
       createCandidateRow('candidate-observation:5', 'repo/c', 'cycle-c', 1, 'extract_shared', 0, 0, true),
       createCandidateRow('candidate-observation:6', 'repo/c', 'cycle-c', 2, 'host_state_update', 1, 1, false),
+    ],
+    candidatePreferences: [
+      createPreferenceRow('candidate-preference:1', 'repo/a', 'cycle-a', 2, 1, 'host_state_update', 'extract_shared'),
+      createPreferenceRow(
+        'candidate-preference:2',
+        'repo/a',
+        'cycle-a',
+        1,
+        2,
+        'extract_shared',
+        'host_state_update',
+        true,
+      ),
+      createPreferenceRow('candidate-preference:3', 'repo/b', 'cycle-b', 4, 3, 'host_state_update', 'extract_shared'),
+      createPreferenceRow(
+        'candidate-preference:4',
+        'repo/b',
+        'cycle-b',
+        3,
+        4,
+        'extract_shared',
+        'host_state_update',
+        true,
+      ),
+      createPreferenceRow('candidate-preference:5', 'repo/c', 'cycle-c', 6, 5, 'host_state_update', 'extract_shared'),
+      createPreferenceRow(
+        'candidate-preference:6',
+        'repo/c',
+        'cycle-c',
+        5,
+        6,
+        'extract_shared',
+        'host_state_update',
+        true,
+      ),
     ],
   };
 }
@@ -242,4 +292,76 @@ function createCandidateRow(
       },
     },
   };
+}
+
+function createPreferenceRow(
+  rowId: string,
+  repositorySlug: string,
+  cycleGroupKey: string,
+  preferredCandidateObservationId: number,
+  rejectedCandidateObservationId: number,
+  preferredStrategy: 'extract_shared' | 'host_state_update',
+  rejectedStrategy: 'extract_shared' | 'host_state_update',
+  syntheticMirror = false,
+): MlCandidatePreferenceRow {
+  return {
+    datasetType: 'candidate_preferences' as const,
+    rowId,
+    repositorySlug,
+    commitSha: 'abc123',
+    cycleGroupKey,
+    cycleObservationId: getPreferenceCycleObservationId(cycleGroupKey),
+    preferredCandidateObservationId,
+    rejectedCandidateObservationId,
+    preferredStrategy,
+    rejectedStrategy,
+    sourceKind: 'acceptability' as const,
+    syntheticMirror,
+    preferenceTarget: syntheticMirror ? (0 as const) : (1 as const),
+    cyclePatternTarget: preferredStrategy === 'host_state_update' ? 'ownership_localization' : 'extract_shared',
+    featureColumns: {
+      numeric: {
+        delta_candidate_confidence:
+          (preferredStrategy === 'host_state_update' ? 0.95 : 0.7) -
+          (rejectedStrategy === 'host_state_update' ? 0.95 : 0.7),
+        preferred_candidate_confidence: preferredStrategy === 'host_state_update' ? 0.95 : 0.7,
+        rejected_candidate_confidence: rejectedStrategy === 'host_state_update' ? 0.95 : 0.7,
+      },
+      categorical: {
+        preferred_candidate_strategy: preferredStrategy,
+        rejected_candidate_strategy: rejectedStrategy,
+      },
+      multiLabel: {
+        preferred_patternCategories: [
+          preferredStrategy === 'host_state_update' ? 'ownership_localization' : 'extract_shared',
+        ],
+        rejected_patternCategories: [
+          rejectedStrategy === 'host_state_update' ? 'ownership_localization' : 'extract_shared',
+        ],
+      },
+    },
+  };
+}
+
+function remapCandidateObservationId(candidateObservationId: number | null) {
+  if (candidateObservationId === null) {
+    return null;
+  }
+  if (candidateObservationId === 5) {
+    return 1;
+  }
+  if (candidateObservationId === 6) {
+    return 2;
+  }
+  return candidateObservationId;
+}
+
+function getPreferenceCycleObservationId(cycleGroupKey: string) {
+  if (cycleGroupKey === 'cycle-a') {
+    return 1;
+  }
+  if (cycleGroupKey === 'cycle-b') {
+    return 3;
+  }
+  return 5;
 }

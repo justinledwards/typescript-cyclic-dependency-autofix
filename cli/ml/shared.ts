@@ -12,7 +12,7 @@ const require = createRequire(import.meta.url);
 
 export const LogisticRegression = require('ml-logistic-regression');
 
-export const ML_DATASET_SCHEMA_VERSION = 1;
+export const ML_DATASET_SCHEMA_VERSION = 2;
 export const DEFAULT_ML_EXPORT_DIR = path.join(process.cwd(), 'exports', 'ml');
 export const DEFAULT_ML_ARTIFACT_DIR = path.join(process.cwd(), 'artifacts', 'ml');
 export const SAFE_ML_STRATEGIES = new Set(['import_type', 'direct_import', 'extract_shared', 'host_state_update']);
@@ -71,13 +71,33 @@ export interface MlCandidateRankingRow {
   featureColumns: MlFeatureColumns;
 }
 
+export interface MlCandidatePreferenceRow {
+  datasetType: 'candidate_preferences';
+  rowId: string;
+  repositorySlug: string;
+  commitSha: string | null;
+  cycleGroupKey: string;
+  cycleObservationId: number | null;
+  preferredCandidateObservationId: number | null;
+  rejectedCandidateObservationId: number | null;
+  preferredStrategy: string | null;
+  rejectedStrategy: string | null;
+  sourceKind: 'acceptability' | 'validation' | 'hard_negative';
+  syntheticMirror: boolean;
+  preferenceTarget: BinaryLabel;
+  cyclePatternTarget: string;
+  featureColumns: MlFeatureColumns;
+}
+
 export interface PreparedMlDatasets {
   summary: {
     cyclePatterns: number;
     candidateRanking: number;
+    candidatePreferences: number;
   };
   cyclePatterns: MlCyclePatternRow[];
   candidateRanking: MlCandidateRankingRow[];
+  candidatePreferences: MlCandidatePreferenceRow[];
 }
 
 export interface MlDatasetManifest {
@@ -87,6 +107,7 @@ export interface MlDatasetManifest {
   outputs: {
     cyclePatterns: Record<'jsonl' | 'parquet', string>;
     candidateRanking: Record<'jsonl' | 'parquet', string>;
+    candidatePreferences: Record<'jsonl' | 'parquet', string>;
   };
 }
 
@@ -230,13 +251,26 @@ export function prepareMlDatasetsFromExport(exportData: TrainingDataExport): Pre
     }
   }
 
+  const candidatePreferences = buildCandidatePreferenceRows(
+    candidateRanking.filter(
+      (row): row is MlCandidateRankingRow & { cycleObservationId: number; candidateObservationId: number } =>
+        row.sourceType === 'candidate_observation' &&
+        row.cycleObservationId !== null &&
+        row.candidateObservationId !== null &&
+        row.strategy !== null &&
+        SAFE_ML_STRATEGIES.has(row.strategy),
+    ),
+  );
+
   return {
     summary: {
       cyclePatterns: cyclePatterns.length,
       candidateRanking: candidateRanking.length,
+      candidatePreferences: candidatePreferences.length,
     },
     cyclePatterns,
     candidateRanking,
+    candidatePreferences,
   };
 }
 
@@ -250,12 +284,16 @@ export async function writePreparedMlDatasets(
   const cyclePatternsParquet = path.join(outputDir, 'cycle-patterns.parquet');
   const candidateRankingJsonl = path.join(outputDir, 'candidate-ranking.jsonl');
   const candidateRankingParquet = path.join(outputDir, 'candidate-ranking.parquet');
+  const candidatePreferencesJsonl = path.join(outputDir, 'candidate-preferences.jsonl');
+  const candidatePreferencesParquet = path.join(outputDir, 'candidate-preferences.parquet');
   const manifestPath = path.join(outputDir, 'manifest.json');
 
   await fs.writeFile(cyclePatternsJsonl, serializeJsonl(datasets.cyclePatterns), 'utf8');
   await fs.writeFile(candidateRankingJsonl, serializeJsonl(datasets.candidateRanking), 'utf8');
+  await fs.writeFile(candidatePreferencesJsonl, serializeJsonl(datasets.candidatePreferences), 'utf8');
   await writeParquet(cyclePatternsParquet, datasets.cyclePatterns);
   await writeParquet(candidateRankingParquet, datasets.candidateRanking);
+  await writeParquet(candidatePreferencesParquet, datasets.candidatePreferences);
 
   const manifest: MlDatasetManifest = {
     schemaVersion: ML_DATASET_SCHEMA_VERSION,
@@ -269,6 +307,10 @@ export async function writePreparedMlDatasets(
       candidateRanking: {
         jsonl: candidateRankingJsonl,
         parquet: candidateRankingParquet,
+      },
+      candidatePreferences: {
+        jsonl: candidatePreferencesJsonl,
+        parquet: candidatePreferencesParquet,
       },
     },
   };
@@ -641,6 +683,220 @@ function mapAcceptanceBenchmarkMlRow(
     ),
     featureColumns,
   };
+}
+
+function buildCandidatePreferenceRows(
+  rows: Array<MlCandidateRankingRow & { cycleObservationId: number; candidateObservationId: number }>,
+): MlCandidatePreferenceRow[] {
+  const grouped = new Map<
+    string,
+    Array<MlCandidateRankingRow & { cycleObservationId: number; candidateObservationId: number }>
+  >();
+
+  for (const row of rows) {
+    const existing = grouped.get(row.cycleGroupKey);
+    if (existing) {
+      existing.push(row);
+      continue;
+    }
+    grouped.set(row.cycleGroupKey, [row]);
+  }
+
+  const preferenceRows: MlCandidatePreferenceRow[] = [];
+  for (const members of grouped.values()) {
+    appendPreferenceRowsForGroup(preferenceRows, members);
+  }
+
+  return preferenceRows;
+}
+
+function appendPreferenceRowsForGroup(
+  preferenceRows: MlCandidatePreferenceRow[],
+  members: Array<MlCandidateRankingRow & { cycleObservationId: number; candidateObservationId: number }>,
+): void {
+  const ordered = sortCopy(
+    members,
+    (left, right) => left.plannerRank - right.plannerRank || left.candidateObservationId - right.candidateObservationId,
+  );
+
+  for (let leftIndex = 0; leftIndex < ordered.length; leftIndex += 1) {
+    const left = ordered[leftIndex];
+    if (!left) {
+      continue;
+    }
+
+    for (let rightIndex = leftIndex + 1; rightIndex < ordered.length; rightIndex += 1) {
+      const right = ordered[rightIndex];
+      if (!right) {
+        continue;
+      }
+
+      const preference = inferCandidatePreference(left, right);
+      if (!preference) {
+        continue;
+      }
+
+      preferenceRows.push(
+        createPreferenceRow(preference.winner, preference.loser, preference.sourceKind, false),
+        createPreferenceRow(preference.winner, preference.loser, preference.sourceKind, true),
+      );
+    }
+  }
+}
+
+export function buildPreferenceFeatureColumns(
+  preferred: Pick<MlCandidateRankingRow, 'featureColumns'>,
+  rejected: Pick<MlCandidateRankingRow, 'featureColumns'>,
+): MlFeatureColumns {
+  const columns = buildFeatureColumns();
+  const numericKeys = new Set([
+    ...Object.keys(preferred.featureColumns.numeric),
+    ...Object.keys(rejected.featureColumns.numeric),
+  ]);
+  const categoricalKeys = new Set([
+    ...Object.keys(preferred.featureColumns.categorical),
+    ...Object.keys(rejected.featureColumns.categorical),
+  ]);
+  const multiLabelKeys = new Set([
+    ...Object.keys(preferred.featureColumns.multiLabel),
+    ...Object.keys(rejected.featureColumns.multiLabel),
+  ]);
+
+  for (const key of numericKeys) {
+    const preferredValue = preferred.featureColumns.numeric[key] ?? 0;
+    const rejectedValue = rejected.featureColumns.numeric[key] ?? 0;
+    addNumericFeature(columns, `delta_${key}`, preferredValue - rejectedValue);
+    addNumericFeature(columns, `preferred_${key}`, preferredValue);
+    addNumericFeature(columns, `rejected_${key}`, rejectedValue);
+  }
+
+  for (const key of categoricalKeys) {
+    const preferredValue = preferred.featureColumns.categorical[key] ?? '__unknown__';
+    const rejectedValue = rejected.featureColumns.categorical[key] ?? '__unknown__';
+    addCategoricalFeature(columns, `preferred_${key}`, preferredValue);
+    addCategoricalFeature(columns, `rejected_${key}`, rejectedValue);
+    addNumericFeature(columns, `same_${key}`, preferredValue === rejectedValue ? 1 : 0);
+  }
+
+  for (const key of multiLabelKeys) {
+    const preferredValues = preferred.featureColumns.multiLabel[key] ?? [];
+    const rejectedValues = rejected.featureColumns.multiLabel[key] ?? [];
+    const rejectedSet = new Set(rejectedValues);
+    const sharedValues = preferredValues.filter((value) => rejectedSet.has(value));
+    addMultiLabelFeature(columns, `preferred_${key}`, preferredValues);
+    addMultiLabelFeature(columns, `rejected_${key}`, rejectedValues);
+    addMultiLabelFeature(columns, `shared_${key}`, sharedValues);
+    addNumericFeature(columns, `preferred_${key}_count`, preferredValues.length);
+    addNumericFeature(columns, `rejected_${key}_count`, rejectedValues.length);
+    addNumericFeature(columns, `shared_${key}_count`, sharedValues.length);
+  }
+
+  return columns;
+}
+
+function inferCandidatePreference<
+  T extends MlCandidateRankingRow & { candidateObservationId: number; cycleObservationId: number },
+>(
+  left: T,
+  right: T,
+): {
+  winner: T;
+  loser: T;
+  sourceKind: MlCandidatePreferenceRow['sourceKind'];
+} | null {
+  const leftScore = getCandidatePreferenceEvidenceScore(left);
+  const rightScore = getCandidatePreferenceEvidenceScore(right);
+  if (leftScore === rightScore) {
+    return null;
+  }
+
+  const winner = leftScore > rightScore ? left : right;
+  const loser = winner === left ? right : left;
+  const sourceKind = derivePreferenceSourceKind(winner, loser);
+
+  if (sourceKind === null) {
+    return null;
+  }
+
+  return {
+    winner,
+    loser,
+    sourceKind,
+  };
+}
+
+function createPreferenceRow(
+  preferred: MlCandidateRankingRow & { candidateObservationId: number; cycleObservationId: number },
+  rejected: MlCandidateRankingRow & { candidateObservationId: number; cycleObservationId: number },
+  sourceKind: MlCandidatePreferenceRow['sourceKind'],
+  syntheticMirror: boolean,
+): MlCandidatePreferenceRow {
+  const first = syntheticMirror ? rejected : preferred;
+  const second = syntheticMirror ? preferred : rejected;
+
+  return {
+    datasetType: 'candidate_preferences',
+    rowId: ['candidate-preference', first.rowId, second.rowId, sourceKind, syntheticMirror ? 'mirror' : 'base'].join(
+      ':',
+    ),
+    repositorySlug: preferred.repositorySlug,
+    commitSha: preferred.commitSha,
+    cycleGroupKey: preferred.cycleGroupKey,
+    cycleObservationId: preferred.cycleObservationId,
+    preferredCandidateObservationId: first.candidateObservationId,
+    rejectedCandidateObservationId: second.candidateObservationId,
+    preferredStrategy: first.strategy,
+    rejectedStrategy: second.strategy,
+    sourceKind,
+    syntheticMirror,
+    preferenceTarget: syntheticMirror ? 0 : 1,
+    cyclePatternTarget: preferred.cyclePatternTarget,
+    featureColumns: buildPreferenceFeatureColumns(first, second),
+  };
+}
+
+function getCandidatePreferenceEvidenceScore(row: MlCandidateRankingRow): number {
+  if (row.candidateAcceptabilityTarget === 1) {
+    return 6;
+  }
+  if (row.candidateValidationTarget === 1 && row.promotionEligible) {
+    return 5;
+  }
+  if (row.candidateValidationTarget === 1) {
+    return 4;
+  }
+  if (row.heuristicSelected && row.candidateValidationTarget !== 0) {
+    return 2;
+  }
+  if (row.promotionEligible) {
+    return 1;
+  }
+  if (row.candidateValidationTarget === 0) {
+    return -4;
+  }
+  if (row.candidateAcceptabilityTarget === 0) {
+    return -5;
+  }
+  return 0;
+}
+
+function derivePreferenceSourceKind(
+  winner: MlCandidateRankingRow,
+  loser: MlCandidateRankingRow,
+): MlCandidatePreferenceRow['sourceKind'] | null {
+  if (winner.candidateAcceptabilityTarget === 1 && loser.candidateAcceptabilityTarget !== 1) {
+    return 'acceptability';
+  }
+  if (winner.candidateValidationTarget === 1 && loser.candidateValidationTarget === 0) {
+    return 'validation';
+  }
+  if (
+    (winner.promotionEligible || winner.candidateValidationTarget === 1) &&
+    (loser.candidateAcceptabilityTarget === 0 || loser.candidateValidationTarget === 0)
+  ) {
+    return 'hard_negative';
+  }
+  return null;
 }
 
 interface BenchmarkStats {

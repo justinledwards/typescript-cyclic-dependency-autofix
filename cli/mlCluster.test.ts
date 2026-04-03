@@ -19,6 +19,7 @@ describe('mlCluster', () => {
       summary: {
         cyclePatterns: 4,
         candidateRanking: 0,
+        candidatePreferences: 0,
       },
       cyclePatterns: [
         createCyclePatternRow('cycle-1', 'acme/a', 'host_state_update', ['ownership_localization'], 2, 1),
@@ -27,6 +28,7 @@ describe('mlCluster', () => {
         createCyclePatternRow('cycle-4', 'acme/b', 'direct_import', ['public_seam_bypass'], 5, 0),
       ],
       candidateRanking: [],
+      candidatePreferences: [],
     };
 
     const result = await clusterCyclePatterns({

@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import { analyzeRepository } from '../analyzer/analyzer.js';
-import { getMlDisagreementReport } from '../db/mlReports.js';
+import { getMlDisagreementReport, getMlLabelingQueueReport } from '../db/mlReports.js';
 import {
   getPatternReport,
   getStrategyPerformanceReport,
@@ -470,6 +470,20 @@ export function createProgram(): Command {
         console.log(JSON.stringify(getMlDisagreementReport(undefined, options.modelVersion), null, 2));
       } catch (error) {
         console.error('Failed to build the ML disagreement report:', error);
+        process.exit(1);
+      }
+    });
+
+  program
+    .command('report:ml-labeling-queue')
+    .description('Print the highest-priority model disagreements to label next')
+    .option('--model-version <version>', 'Restrict the report to a specific model version')
+    .option('--limit <count>', 'Maximum number of rows to print', parseInteger)
+    .action((options: { modelVersion?: string; limit?: number }) => {
+      try {
+        console.log(JSON.stringify(getMlLabelingQueueReport(undefined, options.modelVersion, options.limit), null, 2));
+      } catch (error) {
+        console.error('Failed to build the ML labeling queue report:', error);
         process.exit(1);
       }
     });

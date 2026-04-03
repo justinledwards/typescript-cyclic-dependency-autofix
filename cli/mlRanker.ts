@@ -3,22 +3,25 @@ import type { Matrix as MatrixType } from 'ml-matrix';
 import { Matrix } from 'ml-matrix';
 import { createStatements, getDb } from '../db/index.js';
 import {
+  buildPreferenceFeatureColumns,
   computeBinaryClassificationMetrics,
   encodeFeatureRows,
   type FeatureSchema,
   getBinaryClassProbabilities,
   LogisticRegression,
+  type MlCandidatePreferenceRow,
   type MlCandidateRankingRow,
   type PreparedMlDatasets,
   prepareMlDatasets,
   SAFE_ML_STRATEGIES,
   sortCopy,
   splitCandidateRowsByLabeledRepositoryHoldout,
+  splitRowsByRepositoryHoldout,
 } from './ml/shared.js';
 import { writeMlArtifact } from './mlArtifacts.js';
 
 export interface BinaryModelArtifact {
-  label: 'acceptability' | 'validation';
+  label: 'acceptability' | 'validation' | 'preference';
   modelJson: unknown;
   featureSchema: FeatureSchema;
   featureNames: string[];
@@ -31,18 +34,22 @@ export interface MlRankerArtifact {
   holdoutRepositories: string[];
   trainingSummary: {
     totalCandidateRows: number;
+    totalPreferenceRows: number;
     labeledAcceptabilityRows: number;
     labeledValidationRows: number;
+    labeledPreferenceRows: number;
     trainRows: number;
     holdoutRows: number;
   };
   models: {
     acceptability: BinaryModelArtifact | null;
     validation: BinaryModelArtifact | null;
+    preference: BinaryModelArtifact | null;
   };
   evaluation: {
     acceptability: ReturnType<typeof computeBinaryClassificationMetrics> | null;
     validation: ReturnType<typeof computeBinaryClassificationMetrics> | null;
+    preference: ReturnType<typeof computeBinaryClassificationMetrics> | null;
     top1Acceptability: {
       heuristic: number;
       model: number;
@@ -73,18 +80,21 @@ export interface MlCompareResult {
 }
 
 export async function trainMlRanker(options: MlTrainRankerOptions = {}): Promise<MlRankerArtifact> {
-  const database = options.database ?? getDb();
-  const datasets = options.datasets ?? prepareMlDatasets(database);
+  const database = options.database ?? (options.datasets ? null : getDb());
+  const datasets = options.datasets ?? prepareMlDatasets(database ?? getDb());
   const candidateRows = datasets.candidateRanking.filter((row) => row.strategy && SAFE_ML_STRATEGIES.has(row.strategy));
+  const preferenceRows = datasets.candidatePreferences;
   const split = splitCandidateRowsByLabeledRepositoryHoldout(candidateRows);
+  const preferenceSplit = splitRowsByRepositoryHoldout(preferenceRows);
 
   const labeledAcceptabilityTrainRows = split.trainRows.filter((row) => row.candidateAcceptabilityTarget !== null);
   const labeledValidationTrainRows = split.trainRows.filter((row) => row.candidateValidationTarget !== null);
   const labeledAcceptabilityHoldoutRows = split.holdoutRows.filter((row) => row.candidateAcceptabilityTarget !== null);
   const labeledValidationHoldoutRows = split.holdoutRows.filter((row) => row.candidateValidationTarget !== null);
 
-  const acceptabilityModel = trainBinaryModel(labeledAcceptabilityTrainRows, 'candidateAcceptabilityTarget');
-  const validationModel = trainBinaryModel(labeledValidationTrainRows, 'candidateValidationTarget');
+  const acceptabilityModel = trainCandidateBinaryModel(labeledAcceptabilityTrainRows, 'candidateAcceptabilityTarget');
+  const validationModel = trainCandidateBinaryModel(labeledValidationTrainRows, 'candidateValidationTarget');
+  const preferenceModel = trainPreferenceBinaryModel(preferenceSplit.trainRows);
 
   const acceptabilityEvaluation = evaluateBinaryModel(
     acceptabilityModel,
@@ -96,25 +106,35 @@ export async function trainMlRanker(options: MlTrainRankerOptions = {}): Promise
     labeledValidationHoldoutRows,
     'candidateValidationTarget',
   );
-  const top1Acceptability = compareHeuristicVsModelTop1(acceptabilityModel, split.holdoutRows);
+  const preferenceEvaluation = evaluatePreferenceModel(preferenceModel, preferenceSplit.holdoutRows);
+  const top1Acceptability = compareHeuristicVsModelTop1(
+    acceptabilityModel,
+    validationModel,
+    preferenceModel,
+    split.holdoutRows,
+  );
 
   const payload: Omit<MlRankerArtifact, 'version'> = {
     createdAt: new Date().toISOString(),
     holdoutRepositories: split.holdoutRepositories,
     trainingSummary: {
       totalCandidateRows: candidateRows.length,
+      totalPreferenceRows: preferenceRows.length,
       labeledAcceptabilityRows: labeledAcceptabilityTrainRows.length + labeledAcceptabilityHoldoutRows.length,
       labeledValidationRows: labeledValidationTrainRows.length + labeledValidationHoldoutRows.length,
+      labeledPreferenceRows: preferenceSplit.trainRows.length + preferenceSplit.holdoutRows.length,
       trainRows: split.trainRows.length,
       holdoutRows: split.holdoutRows.length,
     },
     models: {
       acceptability: acceptabilityModel?.artifact ?? null,
       validation: validationModel?.artifact ?? null,
+      preference: preferenceModel?.artifact ?? null,
     },
     evaluation: {
       acceptability: acceptabilityEvaluation,
       validation: validationEvaluation,
+      preference: preferenceEvaluation,
       top1Acceptability,
     },
   };
@@ -148,7 +168,8 @@ export async function compareMlRanker(options: MlTrainRankerOptions = {}): Promi
   const artifact = await trainMlRanker({ database, datasets: options.datasets });
   const acceptabilityArtifact = artifact.models.acceptability;
   const validationArtifact = artifact.models.validation;
-  if (!acceptabilityArtifact || !validationArtifact) {
+  const preferenceArtifact = artifact.models.preference;
+  if (!acceptabilityArtifact && !validationArtifact && !preferenceArtifact) {
     const empty = {
       version: artifact.version,
       totalScoredCandidates: 0,
@@ -170,13 +191,14 @@ export async function compareMlRanker(options: MlTrainRankerOptions = {}): Promi
       SAFE_ML_STRATEGIES.has(row.strategy),
   );
 
-  const scoredRows = scoreRowsWithModels(candidateRows, acceptabilityArtifact, validationArtifact);
+  const scoredRows = scoreRowsWithModels(candidateRows, acceptabilityArtifact, validationArtifact, preferenceArtifact);
   for (const row of scoredRows) {
     statements.upsertCandidateMlScore.run({
       candidate_observation_id: row.candidateObservationId,
       model_version: artifact.version,
       acceptability_score: row.acceptabilityProbability,
       validation_score: row.validationProbability,
+      preference_score: row.preferenceProbability,
       combined_score: row.combinedScore,
     });
   }
@@ -257,10 +279,11 @@ interface ScoredCandidateRow extends MlCandidateRankingRow {
   cycleObservationId: number;
   acceptabilityProbability: number;
   validationProbability: number;
+  preferenceProbability: number;
   combinedScore: number;
 }
 
-function trainBinaryModel(
+function trainCandidateBinaryModel(
   rows: MlCandidateRankingRow[],
   labelKey: 'candidateAcceptabilityTarget' | 'candidateValidationTarget',
 ): TrainedBinaryModel | null {
@@ -297,6 +320,40 @@ function trainBinaryModel(
   };
 }
 
+function trainPreferenceBinaryModel(rows: MlCandidatePreferenceRow[]): TrainedBinaryModel | null {
+  if (rows.length < 2) {
+    return null;
+  }
+
+  const positiveCount = rows.filter((row) => row.preferenceTarget === 1).length;
+  const negativeCount = rows.filter((row) => row.preferenceTarget === 0).length;
+  if (positiveCount === 0 || negativeCount === 0) {
+    return null;
+  }
+
+  const encoded = encodeFeatureRows(rows);
+  const features = new Matrix(encoded.matrix);
+  const targets = Matrix.columnVector(rows.map((row) => row.preferenceTarget));
+
+  const model = new LogisticRegression({ numSteps: 250 * 10, learningRate: 1 / (100 * 10) }) as {
+    train(features: MatrixType, targets: MatrixType): void;
+    toJSON(): unknown;
+    classifiers?: Array<{ testScores(features: MatrixType): number[] }>;
+  };
+  model.train(features, targets);
+
+  return {
+    artifact: {
+      label: 'preference',
+      modelJson: model.toJSON(),
+      featureSchema: encoded.schema,
+      featureNames: encoded.featureNames,
+      positiveLabel: 1,
+    },
+    model,
+  };
+}
+
 function evaluateBinaryModel(
   trainedModel: TrainedBinaryModel | null,
   rows: MlCandidateRankingRow[],
@@ -314,8 +371,13 @@ function evaluateBinaryModel(
   return computeBinaryClassificationMetrics(actual, predictions);
 }
 
-function compareHeuristicVsModelTop1(trainedModel: TrainedBinaryModel | null, rows: MlCandidateRankingRow[]) {
-  if (!trainedModel || rows.length === 0) {
+function compareHeuristicVsModelTop1(
+  acceptabilityModel: TrainedBinaryModel | null,
+  validationModel: TrainedBinaryModel | null,
+  preferenceModel: TrainedBinaryModel | null,
+  rows: MlCandidateRankingRow[],
+) {
+  if (rows.length === 0) {
     return {
       heuristic: 0,
       model: 0,
@@ -333,16 +395,20 @@ function compareHeuristicVsModelTop1(trainedModel: TrainedBinaryModel | null, ro
       beatsHeuristic: false,
     };
   }
+  const rankedRows = scoreRowsWithModels(
+    labeledRows.filter(
+      (row): row is MlCandidateRankingRow & { candidateObservationId: number; cycleObservationId: number } =>
+        row.sourceType === 'candidate_observation' &&
+        row.candidateObservationId !== null &&
+        row.cycleObservationId !== null,
+    ),
+    acceptabilityModel?.artifact ?? null,
+    validationModel?.artifact ?? null,
+    preferenceModel?.artifact ?? null,
+  );
 
-  const encoded = encodeFeatureRows(labeledRows, trainedModel.artifact.featureSchema);
-  const probabilities = getBinaryClassProbabilities(trainedModel.model, new Matrix(encoded.matrix));
-  const scoredRows = labeledRows.map((row, index) => ({
-    ...row,
-    probability: probabilities[index] ?? 0.5,
-  }));
-
-  const grouped = new Map<string, typeof scoredRows>();
-  for (const row of scoredRows) {
+  const grouped = new Map<string, typeof rankedRows>();
+  for (const row of rankedRows) {
     const existing = grouped.get(row.cycleGroupKey);
     if (existing) {
       existing.push(row);
@@ -357,7 +423,7 @@ function compareHeuristicVsModelTop1(trainedModel: TrainedBinaryModel | null, ro
     const heuristic = sortCopy(candidates, (left, right) => left.plannerRank - right.plannerRank)[0];
     const model = sortCopy(
       candidates,
-      (left, right) => right.probability - left.probability || left.plannerRank - right.plannerRank,
+      (left, right) => right.combinedScore - left.combinedScore || left.plannerRank - right.plannerRank,
     )[0];
     if (heuristic?.candidateAcceptabilityTarget === 1) {
       heuristicHits += 1;
@@ -378,29 +444,106 @@ function compareHeuristicVsModelTop1(trainedModel: TrainedBinaryModel | null, ro
 
 function scoreRowsWithModels(
   rows: Array<MlCandidateRankingRow & { candidateObservationId: number; cycleObservationId: number }>,
-  acceptabilityArtifact: BinaryModelArtifact,
-  validationArtifact: BinaryModelArtifact,
+  acceptabilityArtifact: BinaryModelArtifact | null,
+  validationArtifact: BinaryModelArtifact | null,
+  preferenceArtifact: BinaryModelArtifact | null,
 ): ScoredCandidateRow[] {
-  const acceptabilityModel = loadModel(acceptabilityArtifact);
-  const validationModel = loadModel(validationArtifact);
-  const acceptabilityEncoded = encodeFeatureRows(rows, acceptabilityArtifact.featureSchema);
-  const validationEncoded = encodeFeatureRows(rows, validationArtifact.featureSchema);
-  const acceptabilityProbabilities = getBinaryClassProbabilities(
-    acceptabilityModel,
-    new Matrix(acceptabilityEncoded.matrix),
-  );
-  const validationProbabilities = getBinaryClassProbabilities(validationModel, new Matrix(validationEncoded.matrix));
+  const acceptabilityProbabilities = scorePointwiseRows(rows, acceptabilityArtifact);
+  const validationProbabilities = scorePointwiseRows(rows, validationArtifact);
+  const preferenceProbabilities = scorePreferenceRows(rows, preferenceArtifact);
 
   return rows.map((row, index) => {
     const acceptabilityProbability = acceptabilityProbabilities[index] ?? 0.5;
     const validationProbability = validationProbabilities[index] ?? 0.5;
+    const preferenceProbability = preferenceProbabilities[index] ?? 0.5;
+    const componentCount = [acceptabilityArtifact, validationArtifact, preferenceArtifact].filter(Boolean).length || 1;
     return {
       ...row,
       acceptabilityProbability,
       validationProbability,
-      combinedScore: (acceptabilityProbability + validationProbability) / 2,
+      preferenceProbability,
+      combinedScore: (acceptabilityProbability + validationProbability + preferenceProbability) / componentCount,
     };
   });
+}
+
+function scorePointwiseRows(
+  rows: Array<MlCandidateRankingRow & { candidateObservationId: number; cycleObservationId: number }>,
+  artifact: BinaryModelArtifact | null,
+): number[] {
+  if (!artifact) {
+    return Array.from({ length: rows.length }, () => 0.5);
+  }
+  const model = loadModel(artifact);
+  const encoded = encodeFeatureRows(rows, artifact.featureSchema);
+  return getBinaryClassProbabilities(model, new Matrix(encoded.matrix));
+}
+
+function scorePreferenceRows(
+  rows: Array<MlCandidateRankingRow & { candidateObservationId: number; cycleObservationId: number }>,
+  artifact: BinaryModelArtifact | null,
+): number[] {
+  if (!artifact) {
+    return Array.from({ length: rows.length }, () => 0.5);
+  }
+
+  const grouped = new Map<
+    number,
+    Array<MlCandidateRankingRow & { candidateObservationId: number; cycleObservationId: number }>
+  >();
+  for (const row of rows) {
+    const existing = grouped.get(row.cycleObservationId);
+    if (existing) {
+      existing.push(row);
+      continue;
+    }
+    grouped.set(row.cycleObservationId, [row]);
+  }
+
+  const result = new Map<number, number>();
+  const model = loadModel(artifact);
+  for (const groupRows of grouped.values()) {
+    if (groupRows.length === 1) {
+      const single = groupRows[0];
+      if (single) {
+        result.set(single.candidateObservationId, 0.5);
+      }
+      continue;
+    }
+
+    const pairRows = groupRows.flatMap((left) =>
+      groupRows
+        .filter((right) => right.candidateObservationId !== left.candidateObservationId)
+        .map((right) => ({
+          rowId: `preference-inference:${left.rowId}:${right.rowId}`,
+          repositorySlug: left.repositorySlug,
+          featureColumns: buildPreferenceFeatureColumns(left, right),
+        })),
+    );
+    const encoded = encodeFeatureRows(pairRows, artifact.featureSchema);
+    const probabilities = getBinaryClassProbabilities(model, new Matrix(encoded.matrix));
+
+    for (const left of groupRows) {
+      const wins = probabilities.filter((_, index) =>
+        pairRows[index]?.rowId.startsWith(`preference-inference:${left.rowId}:`),
+      );
+      const averageWins = wins.length > 0 ? wins.reduce((sum, value) => sum + value, 0) / wins.length : 0.5;
+      result.set(left.candidateObservationId, averageWins);
+    }
+  }
+
+  return rows.map((row) => result.get(row.candidateObservationId) ?? 0.5);
+}
+
+function evaluatePreferenceModel(trainedModel: TrainedBinaryModel | null, rows: MlCandidatePreferenceRow[]) {
+  if (!trainedModel || rows.length === 0) {
+    return null;
+  }
+  const encoded = encodeFeatureRows(rows, trainedModel.artifact.featureSchema);
+  const probabilities = getBinaryClassProbabilities(trainedModel.model, new Matrix(encoded.matrix));
+  const predictions = probabilities.map((value) => (value >= 0.5 ? 1 : 0));
+  const actual = rows.map((row) => row.preferenceTarget);
+  return computeBinaryClassificationMetrics(actual, predictions);
 }
 
 function loadModel(artifact: BinaryModelArtifact) {

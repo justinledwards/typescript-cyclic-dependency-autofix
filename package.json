@@ -38,6 +38,7 @@
     "export:training-data": "tsx cli/index.ts export:training-data",
     "report:clusters": "tsx cli/index.ts report:clusters",
     "report:ml-disagreements": "tsx cli/index.ts report:ml-disagreements",
+    "report:ml-labeling-queue": "tsx cli/index.ts report:ml-labeling-queue",
     "report:ranker-metrics": "tsx cli/index.ts report:ranker-metrics",
     "prepare": "husky"
   },

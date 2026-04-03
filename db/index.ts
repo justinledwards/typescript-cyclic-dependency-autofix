@@ -420,6 +420,7 @@ const SCHEMA_SQL = `
     model_version TEXT NOT NULL,
     acceptability_score REAL,
     validation_score REAL,
+    preference_score REAL,
     combined_score REAL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -465,6 +466,7 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_benchmark_cases_repository ON benchmark_cases(repository);
   CREATE INDEX IF NOT EXISTS idx_benchmark_cases_commit_sha ON benchmark_cases(commit_sha);
   CREATE INDEX IF NOT EXISTS idx_benchmark_cases_source ON benchmark_cases(source);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_review_decisions_patch_id_unique ON review_decisions(patch_id);
   CREATE INDEX IF NOT EXISTS idx_review_decisions_patch_id ON review_decisions(patch_id);
   CREATE INDEX IF NOT EXISTS idx_review_decisions_decision ON review_decisions(decision);
   CREATE INDEX IF NOT EXISTS idx_acceptance_benchmark_repository ON acceptance_benchmark_cases(repository);
@@ -494,6 +496,7 @@ export function initSchema(database: DatabaseType): void {
   database.exec(SCHEMA_SQL);
   ensureFixCandidateSchema(database);
   ensureObservationSchema(database);
+  ensureMlSchema(database);
 }
 
 interface TableColumnInfo {
@@ -551,6 +554,18 @@ function ensureObservationSchema(database: DatabaseType): void {
 
   if (!cycleObservationColumns.has('graph_summary')) {
     database.exec('ALTER TABLE cycle_observations ADD COLUMN graph_summary TEXT');
+  }
+}
+
+function ensureMlSchema(database: DatabaseType): void {
+  const candidateMlScoreColumns = new Set(
+    (database.prepare('PRAGMA table_info(candidate_ml_scores)').all() as TableColumnInfo[]).map(
+      (column) => column.name,
+    ),
+  );
+
+  if (candidateMlScoreColumns.size > 0 && !candidateMlScoreColumns.has('preference_score')) {
+    database.exec('ALTER TABLE candidate_ml_scores ADD COLUMN preference_score REAL');
   }
 }
 
@@ -922,6 +937,7 @@ export function createStatements(database: DatabaseType) {
         model_version,
         acceptability_score,
         validation_score,
+        preference_score,
         combined_score
       )
       VALUES (
@@ -929,11 +945,13 @@ export function createStatements(database: DatabaseType) {
         @model_version,
         @acceptability_score,
         @validation_score,
+        @preference_score,
         @combined_score
       )
       ON CONFLICT(candidate_observation_id, model_version) DO UPDATE SET
         acceptability_score = excluded.acceptability_score,
         validation_score = excluded.validation_score,
+        preference_score = excluded.preference_score,
         combined_score = excluded.combined_score,
         updated_at = CURRENT_TIMESTAMP
     `),

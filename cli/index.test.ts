@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { analyzeRepository } from '../analyzer/analyzer.js';
-import { getMlDisagreementReport } from '../db/mlReports.js';
+import { getMlDisagreementReport, getMlLabelingQueueReport } from '../db/mlReports.js';
 import {
   getPatternReport,
   getStrategyPerformanceReport,
@@ -141,6 +141,29 @@ vi.mock('../db/mlReports.js', () => ({
         heuristicScore: 0.41,
         modelScore: 0.88,
         disagreement: true,
+      },
+    ],
+  }),
+  getMlLabelingQueueReport: vi.fn().mockReturnValue({
+    modelVersion: 'ml-test',
+    totalCycles: 1,
+    rows: [
+      {
+        cycleObservationId: 12,
+        modelVersion: 'ml-test',
+        repositorySlug: 'acme/widget',
+        normalizedPath: 'a.ts -> b.ts -> a.ts',
+        heuristicStrategy: 'extract_shared',
+        modelStrategy: 'host_state_update',
+        heuristicCandidateObservationId: 1,
+        modelCandidateObservationId: 2,
+        heuristicScore: 0.41,
+        modelScore: 0.88,
+        heuristicValidationStatus: 'failed',
+        modelValidationStatus: 'passed',
+        heuristicReviewDecision: null,
+        modelReviewDecision: null,
+        priorityScore: 13.35,
       },
     ],
   }),
@@ -540,6 +563,7 @@ vi.mock('./mlPrepare.js', () => ({
       summary: {
         cyclePatterns: 3,
         candidateRanking: 6,
+        candidatePreferences: 4,
       },
     },
   }),
@@ -1180,6 +1204,29 @@ describe('CLI', () => {
     consoleSpy.mockRestore();
   });
 
+  it('report:ml-labeling-queue command prints the highest-priority labeling queue rows as JSON', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const program = createProgram();
+    program.exitOverride();
+
+    await program.parseAsync([
+      'node',
+      'test',
+      'report:ml-labeling-queue',
+      '--model-version',
+      'ml-test',
+      '--limit',
+      '10',
+    ]);
+
+    expect(vi.mocked(getMlLabelingQueueReport)).toHaveBeenCalledWith(undefined, 'ml-test', 10);
+    expect(JSON.parse(consoleSpy.mock.calls[0][0] as string)).toMatchObject({
+      modelVersion: 'ml-test',
+      totalCycles: 1,
+    });
+    consoleSpy.mockRestore();
+  });
+
   it('report:ranker-metrics command prints the latest ranker metrics as JSON', async () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const program = createProgram();
@@ -1550,6 +1597,7 @@ describe('CLI', () => {
     expect(commandNames).toContain('report:patterns');
     expect(commandNames).toContain('report:clusters');
     expect(commandNames).toContain('report:ml-disagreements');
+    expect(commandNames).toContain('report:ml-labeling-queue');
     expect(commandNames).toContain('report:ranker-metrics');
     expect(commandNames).toContain('report:strategy-performance');
     expect(commandNames).toContain('report:unsupported-clusters');

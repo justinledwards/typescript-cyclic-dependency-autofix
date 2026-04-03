@@ -151,11 +151,18 @@ ML is a ranking mechanism, not a correctness mechanism.
 The repo now has a first offline advisory ML loop:
 
 - `export:training-data` writes model-ready base exports
-- `ml:prepare` derives `cycle_patterns` and `candidate_ranking` datasets
+- `ml:prepare` derives `cycle_patterns`, `candidate_ranking`, and `candidate_preferences` datasets
 - `ml:cluster` groups recurring cycle shapes
-- `ml:train-ranker` trains baseline logistic models
+- `ml:train-ranker` trains baseline logistic models for acceptability, validation, and pairwise preference
 - `ml:evaluate` reports repo-holdout metrics
 - `ml:compare` persists heuristic-vs-model disagreements for later strategy work
+- `report:ml-labeling-queue` prioritizes the disagreements that should be labeled next
+
+The current ranking loop now includes:
+
+- pairwise preference learning from real approved/rejected alternatives
+- mirrored structural augmentation for those pairwise rows
+- hard-negative mining when a safer candidate consistently beats a failed alternative
 
 This slice is intentionally advisory-only. Runtime promotion and patch generation still depend on structural checks and validation outcomes.
 

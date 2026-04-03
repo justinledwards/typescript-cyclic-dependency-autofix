@@ -124,6 +124,7 @@ pnpm run ml:evaluate
 pnpm run ml:compare
 pnpm run report:clusters
 pnpm run report:ml-disagreements
+pnpm run report:ml-labeling-queue
 pnpm run report:ranker-metrics
 ```
 
@@ -142,7 +143,8 @@ Use it in this order:
 1. `pnpm run export:training-data -- --format parquet`
    - export the current SQLite-backed observation, candidate, and benchmark state
 2. `pnpm run ml:prepare`
-   - flatten the exported data into model-ready `cycle_patterns` and `candidate_ranking` datasets under `exports/ml/`
+   - flatten the exported data into model-ready `cycle_patterns`, `candidate_ranking`, and `candidate_preferences` datasets under `exports/ml/`
+   - derive structural pairwise preferences and mirrored hard-negative examples from real candidate groups
 3. `pnpm run ml:cluster`
    - discover recurring cycle groups from cycle-level features
 4. `pnpm run ml:train-ranker`
@@ -151,11 +153,14 @@ Use it in this order:
    - measure repo-holdout accuracy and top-1 acceptability against the heuristic baseline
 6. `pnpm run ml:compare`
    - persist advisory candidate scores and report heuristic-vs-model disagreements
+7. `pnpm run report:ml-labeling-queue`
+   - surface the highest-value disagreement rows to label next so the model improves where the heuristic is most uncertain
 
 The ML pipeline never generates patches by itself and never overrides runtime safety checks. It is only used to:
 
 - surface recurring cycle/fix clusters
 - score already-safe candidates
+- learn within-cycle preferences from real approved/rejected alternatives and hard negatives
 - show where heuristic ranking likely needs new strategies or better evidence
 
 ## Engineering Principles

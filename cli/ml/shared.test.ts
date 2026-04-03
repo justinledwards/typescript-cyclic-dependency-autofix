@@ -57,6 +57,7 @@ describe('ml/shared', () => {
 
     expect(datasets.summary.cyclePatterns).toBe(1);
     expect(datasets.summary.candidateRanking).toBe(3);
+    expect(datasets.summary.candidatePreferences).toBe(2);
     expect(datasets.cyclePatterns[0]).toMatchObject({
       cyclePatternTarget: 'ownership_localization',
       acceptedCandidateCount: 1,
@@ -78,6 +79,26 @@ describe('ml/shared', () => {
       candidateAcceptabilityTarget: 0,
       candidateValidationTarget: 0,
     });
+
+    const preferenceRows = datasets.candidatePreferences;
+    expect(preferenceRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          preferredStrategy: 'host_state_update',
+          rejectedStrategy: 'extract_shared',
+          sourceKind: 'acceptability',
+          syntheticMirror: false,
+          preferenceTarget: 1,
+        }),
+        expect.objectContaining({
+          preferredStrategy: 'extract_shared',
+          rejectedStrategy: 'host_state_update',
+          sourceKind: 'acceptability',
+          syntheticMirror: true,
+          preferenceTarget: 0,
+        }),
+      ]),
+    );
 
     const acceptanceRow = datasets.candidateRanking.find((row) => row.sourceType === 'acceptance_benchmark');
     expect(acceptanceRow).toMatchObject({

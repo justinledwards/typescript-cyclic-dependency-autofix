@@ -115,6 +115,7 @@ describe('mlRanker', () => {
       summary: {
         cyclePatterns: 0,
         candidateRanking: 6,
+        syntheticFixtures: 2,
         candidatePreferences: 6,
       },
       cyclePatterns: [],
@@ -156,6 +157,30 @@ describe('mlRanker', () => {
         }
         return row;
       }),
+      syntheticFixtures: [
+        createSyntheticFixtureRow(
+          'synthetic-fixture:1',
+          'repo/a',
+          'cycle-a',
+          1,
+          'host_state_update',
+          'autofix_host_state_update',
+          'historical_fix',
+          false,
+          1,
+        ),
+        createSyntheticFixtureRow(
+          'synthetic-fixture:2',
+          'repo/a',
+          'cycle-a',
+          2,
+          'extract_shared',
+          'autofix_extract_shared',
+          'hard_negative',
+          true,
+          0,
+        ),
+      ],
       candidatePreferences: createPreparedDatasets().candidatePreferences.map((row) => ({
         ...row,
         repositorySlug: row.repositorySlug === 'repo/c' ? 'acme/widget' : row.repositorySlug,
@@ -193,6 +218,7 @@ function createPreparedDatasets(): PreparedMlDatasets {
     summary: {
       cyclePatterns: 0,
       candidateRanking: 6,
+      syntheticFixtures: 2,
       candidatePreferences: 6,
     },
     cyclePatterns: [],
@@ -203,6 +229,30 @@ function createPreparedDatasets(): PreparedMlDatasets {
       createCandidateRow('candidate-observation:4', 'repo/b', 'cycle-b', 2, 'host_state_update', 1, 1, false),
       createCandidateRow('candidate-observation:5', 'repo/c', 'cycle-c', 1, 'extract_shared', 0, 0, true),
       createCandidateRow('candidate-observation:6', 'repo/c', 'cycle-c', 2, 'host_state_update', 1, 1, false),
+    ],
+    syntheticFixtures: [
+      createSyntheticFixtureRow(
+        'synthetic-fixture:1',
+        'repo/a',
+        'cycle-a',
+        1,
+        'host_state_update',
+        'autofix_host_state_update',
+        'historical_fix',
+        false,
+        1,
+      ),
+      createSyntheticFixtureRow(
+        'synthetic-fixture:2',
+        'repo/a',
+        'cycle-a',
+        2,
+        'extract_shared',
+        'autofix_extract_shared',
+        'hard_negative',
+        true,
+        0,
+      ),
     ],
     candidatePreferences: [
       createPreferenceRow('candidate-preference:1', 'repo/a', 'cycle-a', 2, 1, 'host_state_update', 'extract_shared'),
@@ -340,6 +390,61 @@ function createPreferenceRow(
         ],
       },
     },
+  };
+}
+
+function createSyntheticFixtureRow(
+  rowId: string,
+  repositorySlug: string,
+  cycleGroupKey: string,
+  candidateObservationId: number,
+  strategy: 'extract_shared' | 'host_state_update',
+  classification: 'autofix_extract_shared' | 'autofix_host_state_update',
+  fixtureKind: 'historical_fix' | 'hard_negative',
+  syntheticMirror: boolean,
+  target: 0 | 1,
+): MlCandidateRankingRow {
+  return {
+    datasetType: 'candidate_ranking',
+    rowId,
+    sourceType: 'synthetic_fixture',
+    repositorySlug,
+    commitSha: 'abc123',
+    cycleGroupKey,
+    cycleId: candidateObservationId,
+    cycleObservationId: candidateObservationId,
+    candidateObservationId: -candidateObservationId,
+    acceptanceBenchmarkId: null,
+    normalizedPath: `${cycleGroupKey}.ts`,
+    strategy,
+    classification,
+    plannerRank: fixtureKind === 'historical_fix' ? 1 : 2,
+    heuristicSelected: fixtureKind === 'historical_fix',
+    promotionEligible: fixtureKind === 'historical_fix',
+    candidateAcceptabilityTarget: target,
+    candidateValidationTarget: target,
+    cyclePatternTarget: strategy === 'host_state_update' ? 'ownership_localization' : 'extract_shared',
+    featureColumns: {
+      numeric: {
+        cycleSize: 2,
+        candidate_plannerRank: fixtureKind === 'historical_fix' ? 1 : 2,
+        candidate_signal_introducesNewFile: strategy === 'extract_shared' ? 1 : 0,
+        candidate_signal_preservesSourceExports: strategy === 'host_state_update' ? 1 : 0,
+        candidate_confidence: fixtureKind === 'historical_fix' ? 0.91 : 0.24,
+        candidate_upstreamabilityScore: fixtureKind === 'historical_fix' ? 0.87 : 0.21,
+      },
+      categorical: {
+        candidate_strategy: strategy,
+        packageManager: 'pnpm',
+        workspaceMode: 'workspace',
+      },
+      multiLabel: {
+        patternCategories: [strategy === 'host_state_update' ? 'ownership_localization' : 'extract_shared'],
+      },
+    },
+    syntheticFixtureKind: fixtureKind,
+    syntheticMirror,
+    syntheticSourceRowId: `source:${rowId}`,
   };
 }
 

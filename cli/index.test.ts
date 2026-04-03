@@ -563,6 +563,7 @@ vi.mock('./mlPrepare.js', () => ({
       summary: {
         cyclePatterns: 3,
         candidateRanking: 6,
+        syntheticFixtures: 2,
         candidatePreferences: 4,
       },
     },

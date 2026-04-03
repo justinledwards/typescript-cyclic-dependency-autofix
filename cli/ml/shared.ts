@@ -51,7 +51,7 @@ export interface MlCyclePatternRow {
 export interface MlCandidateRankingRow {
   datasetType: 'candidate_ranking';
   rowId: string;
-  sourceType: 'candidate_observation' | 'acceptance_benchmark';
+  sourceType: 'candidate_observation' | 'acceptance_benchmark' | 'synthetic_fixture';
   repositorySlug: string;
   commitSha: string | null;
   cycleGroupKey: string;
@@ -69,6 +69,9 @@ export interface MlCandidateRankingRow {
   candidateValidationTarget: BinaryLabel | null;
   cyclePatternTarget: string;
   featureColumns: MlFeatureColumns;
+  syntheticFixtureKind?: 'historical_fix' | 'hard_negative';
+  syntheticSourceRowId?: string;
+  syntheticMirror?: boolean;
 }
 
 export interface MlCandidatePreferenceRow {
@@ -94,9 +97,11 @@ export interface PreparedMlDatasets {
     cyclePatterns: number;
     candidateRanking: number;
     candidatePreferences: number;
+    syntheticFixtures: number;
   };
   cyclePatterns: MlCyclePatternRow[];
   candidateRanking: MlCandidateRankingRow[];
+  syntheticFixtures: MlCandidateRankingRow[];
   candidatePreferences: MlCandidatePreferenceRow[];
 }
 
@@ -107,6 +112,7 @@ export interface MlDatasetManifest {
   outputs: {
     cyclePatterns: Record<'jsonl' | 'parquet', string>;
     candidateRanking: Record<'jsonl' | 'parquet', string>;
+    syntheticFixtures: Record<'jsonl' | 'parquet', string>;
     candidatePreferences: Record<'jsonl' | 'parquet', string>;
   };
 }
@@ -251,10 +257,11 @@ export function prepareMlDatasetsFromExport(exportData: TrainingDataExport): Pre
     }
   }
 
+  const syntheticFixtures = buildSyntheticFixtures(cyclePatterns, candidateRanking);
+  const candidatePreferenceSeeds = [...candidateRanking, ...syntheticFixtures];
   const candidatePreferences = buildCandidatePreferenceRows(
-    candidateRanking.filter(
+    candidatePreferenceSeeds.filter(
       (row): row is MlCandidateRankingRow & { cycleObservationId: number; candidateObservationId: number } =>
-        row.sourceType === 'candidate_observation' &&
         row.cycleObservationId !== null &&
         row.candidateObservationId !== null &&
         row.strategy !== null &&
@@ -267,9 +274,11 @@ export function prepareMlDatasetsFromExport(exportData: TrainingDataExport): Pre
       cyclePatterns: cyclePatterns.length,
       candidateRanking: candidateRanking.length,
       candidatePreferences: candidatePreferences.length,
+      syntheticFixtures: syntheticFixtures.length,
     },
     cyclePatterns,
     candidateRanking,
+    syntheticFixtures,
     candidatePreferences,
   };
 }
@@ -284,15 +293,19 @@ export async function writePreparedMlDatasets(
   const cyclePatternsParquet = path.join(outputDir, 'cycle-patterns.parquet');
   const candidateRankingJsonl = path.join(outputDir, 'candidate-ranking.jsonl');
   const candidateRankingParquet = path.join(outputDir, 'candidate-ranking.parquet');
+  const syntheticFixturesJsonl = path.join(outputDir, 'synthetic-fixtures.jsonl');
+  const syntheticFixturesParquet = path.join(outputDir, 'synthetic-fixtures.parquet');
   const candidatePreferencesJsonl = path.join(outputDir, 'candidate-preferences.jsonl');
   const candidatePreferencesParquet = path.join(outputDir, 'candidate-preferences.parquet');
   const manifestPath = path.join(outputDir, 'manifest.json');
 
   await fs.writeFile(cyclePatternsJsonl, serializeJsonl(datasets.cyclePatterns), 'utf8');
   await fs.writeFile(candidateRankingJsonl, serializeJsonl(datasets.candidateRanking), 'utf8');
+  await fs.writeFile(syntheticFixturesJsonl, serializeJsonl(datasets.syntheticFixtures), 'utf8');
   await fs.writeFile(candidatePreferencesJsonl, serializeJsonl(datasets.candidatePreferences), 'utf8');
   await writeParquet(cyclePatternsParquet, datasets.cyclePatterns);
   await writeParquet(candidateRankingParquet, datasets.candidateRanking);
+  await writeParquet(syntheticFixturesParquet, datasets.syntheticFixtures);
   await writeParquet(candidatePreferencesParquet, datasets.candidatePreferences);
 
   const manifest: MlDatasetManifest = {
@@ -308,6 +321,10 @@ export async function writePreparedMlDatasets(
         jsonl: candidateRankingJsonl,
         parquet: candidateRankingParquet,
       },
+      syntheticFixtures: {
+        jsonl: syntheticFixturesJsonl,
+        parquet: syntheticFixturesParquet,
+      },
       candidatePreferences: {
         jsonl: candidatePreferencesJsonl,
         parquet: candidatePreferencesParquet,
@@ -321,6 +338,208 @@ export async function writePreparedMlDatasets(
     manifestPath,
     manifest,
   };
+}
+
+function buildSyntheticFixtures(
+  cyclePatterns: MlCyclePatternRow[],
+  candidateRows: MlCandidateRankingRow[],
+): MlCandidateRankingRow[] {
+  const fixtures: MlCandidateRankingRow[] = [];
+  for (const cycle of cyclePatterns) {
+    const sourceCandidate = pickHistoricalFixCandidate(candidateRows, cycle.observationId);
+    const positiveStrategy = sourceCandidate?.strategy ?? chooseCanonicalStrategy(cycle);
+    const positiveClassification = strategyToClassification(positiveStrategy);
+    const negativeStrategy = chooseHardNegativeStrategy(positiveStrategy, cycle);
+    const negativeClassification = strategyToClassification(negativeStrategy);
+    const positiveCycleKey = `${cycle.repositorySlug}:${cycle.commitSha ?? 'synthetic'}:${cycle.normalizedPath}`;
+
+    fixtures.push(
+      createSyntheticFixtureRow({
+        cycle,
+        sourceCandidate,
+        cycleGroupKey: positiveCycleKey,
+        sourceRowId: sourceCandidate?.rowId ?? cycle.rowId,
+        syntheticCandidateId: syntheticCandidateIdFrom(cycle.observationId, 1),
+        strategy: positiveStrategy,
+        classification: positiveClassification,
+        fixtureKind: 'historical_fix',
+        syntheticMirror: false,
+        target: 1,
+      }),
+      createSyntheticFixtureRow({
+        cycle,
+        sourceCandidate,
+        cycleGroupKey: positiveCycleKey,
+        sourceRowId: sourceCandidate?.rowId ?? cycle.rowId,
+        syntheticCandidateId: syntheticCandidateIdFrom(cycle.observationId, 2),
+        strategy: negativeStrategy,
+        classification: negativeClassification,
+        fixtureKind: 'hard_negative',
+        syntheticMirror: true,
+        target: 0,
+      }),
+    );
+  }
+  return fixtures;
+}
+
+function pickHistoricalFixCandidate(
+  candidateRows: MlCandidateRankingRow[],
+  observationId: number,
+): MlCandidateRankingRow | null {
+  const group = candidateRows.filter(
+    (row) => row.sourceType === 'candidate_observation' && row.cycleObservationId === observationId,
+  );
+  return (
+    sortCopy(
+      group,
+      (left, right) =>
+        Number(right.candidateAcceptabilityTarget ?? -1) - Number(left.candidateAcceptabilityTarget ?? -1) ||
+        Number(right.candidateValidationTarget ?? -1) - Number(left.candidateValidationTarget ?? -1) ||
+        left.plannerRank - right.plannerRank,
+    )[0] ?? null
+  );
+}
+
+function chooseCanonicalStrategy(cycle: MlCyclePatternRow): string {
+  const categories = new Set(cycle.featureColumns.multiLabel.patternCategories);
+  if (categories.has('ownership_localization') || categories.has('host_owned_state_update')) {
+    return 'host_state_update';
+  }
+  if (
+    categories.has('public_seam_bypass') ||
+    categories.has('export_graph_rewrite') ||
+    categories.has('barrel_reexport_cleanup')
+  ) {
+    return 'direct_import';
+  }
+  if (categories.has('type_value_split')) {
+    return 'import_type';
+  }
+  return cycle.selectedStrategy ?? 'extract_shared';
+}
+
+function chooseHardNegativeStrategy(positiveStrategy: string, cycle: MlCyclePatternRow): string {
+  const categories = new Set(cycle.featureColumns.multiLabel.patternCategories);
+  if (positiveStrategy === 'host_state_update') {
+    return 'extract_shared';
+  }
+  if (positiveStrategy === 'direct_import') {
+    return categories.has('public_seam_bypass') ? 'extract_shared' : 'import_type';
+  }
+  if (positiveStrategy === 'import_type') {
+    return categories.has('ownership_localization') ? 'extract_shared' : 'direct_import';
+  }
+  return categories.has('ownership_localization') ? 'host_state_update' : 'direct_import';
+}
+
+function strategyToClassification(strategy: string): string {
+  switch (strategy) {
+    case 'host_state_update': {
+      return 'autofix_host_state_update';
+    }
+    case 'direct_import': {
+      return 'autofix_direct_import';
+    }
+    case 'import_type': {
+      return 'autofix_import_type';
+    }
+    case 'extract_shared': {
+      return 'autofix_extract_shared';
+    }
+    default: {
+      return 'unsupported';
+    }
+  }
+}
+
+function syntheticCandidateIdFrom(observationId: number, suffix: number): number {
+  return -(observationId * 10 + suffix);
+}
+
+function createSyntheticFixtureRow(options: {
+  cycle: MlCyclePatternRow;
+  sourceCandidate: MlCandidateRankingRow | null;
+  cycleGroupKey: string;
+  sourceRowId: string;
+  syntheticCandidateId: number;
+  strategy: string;
+  classification: string;
+  fixtureKind: 'historical_fix' | 'hard_negative';
+  syntheticMirror: boolean;
+  target: BinaryLabel;
+}): MlCandidateRankingRow {
+  const {
+    cycle,
+    sourceCandidate,
+    cycleGroupKey,
+    sourceRowId,
+    syntheticCandidateId,
+    strategy,
+    classification,
+    fixtureKind,
+    syntheticMirror,
+    target,
+  } = options;
+  const featureColumns = buildFeatureColumns();
+  mergeFeatureColumns(featureColumns, cycle.featureColumns);
+  addFeatureRecord(featureColumns, 'synthetic_candidate', {
+    strategy,
+    classification,
+    plannerRank: fixtureKind === 'historical_fix' ? 1 : 2,
+    promotionEligible: fixtureKind === 'historical_fix',
+    confidence: fixtureKind === 'historical_fix' ? 0.9 : 0.25,
+    upstreamabilityScore: fixtureKind === 'historical_fix' ? 0.85 : 0.2,
+    supportTarget: target,
+    syntheticMirror,
+  });
+  addFeatureRecord(featureColumns, 'synthetic_source', {
+    selectedStrategy: cycle.selectedStrategy ?? 'unknown',
+    selectedClassification: cycle.selectedClassification ?? 'unknown',
+    acceptedCandidateCount: cycle.acceptedCandidateCount,
+    rejectedCandidateCount: cycle.rejectedCandidateCount,
+    supportedCandidateCount: cycle.supportedCandidateCount,
+    sourceAcceptedCandidateCount: sourceCandidate?.candidateAcceptabilityTarget ?? 0,
+    sourceValidationTarget: sourceCandidate?.candidateValidationTarget ?? 0,
+  });
+  addMultiLabelFeature(featureColumns, 'patternCategories', cycle.featureColumns.multiLabel.patternCategories ?? []);
+
+  return {
+    datasetType: 'candidate_ranking',
+    rowId: `synthetic-fixture:${cycle.observationId}:${fixtureKind}:${strategy}`,
+    sourceType: 'synthetic_fixture',
+    repositorySlug: cycle.repositorySlug,
+    commitSha: cycle.commitSha,
+    cycleGroupKey,
+    cycleId: cycle.cycleId,
+    cycleObservationId: cycle.observationId,
+    candidateObservationId: syntheticCandidateId,
+    acceptanceBenchmarkId: null,
+    normalizedPath: cycle.normalizedPath,
+    strategy,
+    classification,
+    plannerRank: fixtureKind === 'historical_fix' ? 1 : 2,
+    heuristicSelected: fixtureKind === 'historical_fix',
+    promotionEligible: fixtureKind === 'historical_fix',
+    candidateAcceptabilityTarget: target,
+    candidateValidationTarget: target,
+    cyclePatternTarget: cycle.cyclePatternTarget,
+    featureColumns,
+    syntheticFixtureKind: fixtureKind,
+    syntheticSourceRowId: sourceRowId,
+  };
+}
+
+function mergeFeatureColumns(columns: MlFeatureColumns, source: MlFeatureColumns): void {
+  for (const [key, value] of Object.entries(source.numeric)) {
+    addNumericFeature(columns, key, value);
+  }
+  for (const [key, value] of Object.entries(source.categorical)) {
+    addCategoricalFeature(columns, key, value);
+  }
+  for (const [key, values] of Object.entries(source.multiLabel)) {
+    addMultiLabelFeature(columns, key, values);
+  }
 }
 
 // eslint-disable-next-line sonarjs/cognitive-complexity

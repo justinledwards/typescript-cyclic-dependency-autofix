@@ -82,7 +82,9 @@ export interface MlCompareResult {
 export async function trainMlRanker(options: MlTrainRankerOptions = {}): Promise<MlRankerArtifact> {
   const database = options.database ?? (options.datasets ? null : getDb());
   const datasets = options.datasets ?? prepareMlDatasets(database ?? getDb());
-  const candidateRows = datasets.candidateRanking.filter((row) => row.strategy && SAFE_ML_STRATEGIES.has(row.strategy));
+  const candidateRows = [...datasets.candidateRanking, ...datasets.syntheticFixtures].filter(
+    (row) => row.strategy && SAFE_ML_STRATEGIES.has(row.strategy),
+  );
   const preferenceRows = datasets.candidatePreferences;
   const split = splitCandidateRowsByLabeledRepositoryHoldout(candidateRows);
   const preferenceSplit = splitRowsByRepositoryHoldout(preferenceRows);

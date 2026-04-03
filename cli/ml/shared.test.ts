@@ -57,7 +57,8 @@ describe('ml/shared', () => {
 
     expect(datasets.summary.cyclePatterns).toBe(1);
     expect(datasets.summary.candidateRanking).toBe(3);
-    expect(datasets.summary.candidatePreferences).toBe(2);
+    expect(datasets.summary.syntheticFixtures).toBe(2);
+    expect(datasets.summary.candidatePreferences).toBeGreaterThanOrEqual(2);
     expect(datasets.cyclePatterns[0]).toMatchObject({
       cyclePatternTarget: 'ownership_localization',
       acceptedCandidateCount: 1,

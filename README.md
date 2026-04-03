@@ -143,8 +143,8 @@ Use it in this order:
 1. `pnpm run export:training-data -- --format parquet`
    - export the current SQLite-backed observation, candidate, and benchmark state
 2. `pnpm run ml:prepare`
-   - flatten the exported data into model-ready `cycle_patterns`, `candidate_ranking`, and `candidate_preferences` datasets under `exports/ml/`
-   - derive structural pairwise preferences and mirrored hard-negative examples from real candidate groups
+   - flatten the exported data into model-ready `cycle_patterns`, `candidate_ranking`, `synthetic_fixtures`, and `candidate_preferences` datasets under `exports/ml/`
+   - derive structural pairwise preferences, mirrored hard-negative examples, and synthetic fixtures from real cycle graphs and historical fixes
 3. `pnpm run ml:cluster`
    - discover recurring cycle groups from cycle-level features
 4. `pnpm run ml:train-ranker`
@@ -161,6 +161,7 @@ The ML pipeline never generates patches by itself and never overrides runtime sa
 - surface recurring cycle/fix clusters
 - score already-safe candidates
 - learn within-cycle preferences from real approved/rejected alternatives and hard negatives
+- train on synthetic structural fixtures that are still anchored to real cycle shapes and historical fixes
 - show where heuristic ranking likely needs new strategies or better evidence
 
 ## Engineering Principles

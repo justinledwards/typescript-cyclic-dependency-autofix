@@ -130,6 +130,94 @@ describe('generatePatchForCycle', () => {
     expect(patch?.touchedFiles).toEqual(['app.ts']);
   });
 
+  it('creates a public-seam bypass patch when a public API re-export resolves to a concrete leaf', async () => {
+    const repoPath = await createRepo({
+      'app.ts': "import { Foo } from './api';\nexport const appValue = Foo + 1;\n",
+      'api.ts': "export { Foo } from './foo';\nexport { Bar } from './bar';\n",
+      'foo.ts': 'export const Foo = 1;\n',
+      'bar.ts': "import { appValue } from './app';\nexport const Bar = appValue + 1;\n",
+    });
+
+    const cycle: CircularDependency = {
+      type: 'circular',
+      path: ['app.ts', 'api.ts', 'bar.ts', 'app.ts'],
+    };
+    const analysis: SemanticAnalysisResult = {
+      classification: 'autofix_public_seam_bypass',
+      confidence: 0.9,
+      reasons: ['bypass api seam to concrete leaf'],
+      plan: {
+        kind: 'public_seam_bypass',
+        imports: [
+          {
+            sourceFile: 'app.ts',
+            barrelFile: 'api.ts',
+            targetFile: 'foo.ts',
+            symbols: ['Foo'],
+          },
+        ],
+      },
+    };
+
+    const patch = await generatePatchForCycle(repoPath, cycle, analysis);
+
+    expect(patch).not.toBeNull();
+    expect(patch?.patchText).toContain("+import { Foo } from './foo';");
+    expect(patch?.touchedFiles).toEqual(['app.ts']);
+  });
+
+  it('creates a mixed type/runtime split patch when a barrel separates type and value targets', async () => {
+    const repoPath = await createRepo({
+      'app.ts': [
+        "import { type FooConfig, makeFoo } from './index';",
+        'export const appValue = makeFoo();',
+        'export type AppConfig = FooConfig & { enabled: boolean };',
+        '',
+      ].join('\n'),
+      'index.ts': [
+        "import { appValue } from './app';",
+        "export { makeFoo } from './foo';",
+        "export type { FooConfig } from './foo';",
+        'export const indexValue = appValue;',
+        '',
+      ].join('\n'),
+      'foo.ts': ['export interface FooConfig {', '  value: number;', '}', 'export const makeFoo = () => 1;', ''].join(
+        '\n',
+      ),
+    });
+
+    const cycle: CircularDependency = {
+      type: 'circular',
+      path: ['app.ts', 'index.ts', 'app.ts'],
+    };
+    const analysis: SemanticAnalysisResult = {
+      classification: 'autofix_type_runtime_split',
+      confidence: 0.88,
+      reasons: ['split mixed type/runtime imports'],
+      plan: {
+        kind: 'type_runtime_split',
+        imports: [
+          {
+            sourceFile: 'app.ts',
+            barrelFile: 'index.ts',
+            targetFile: 'foo.ts',
+            typeOnlySymbols: ['FooConfig'],
+            runtimeSymbols: ['makeFoo'],
+            splitDeclarations: 1,
+          },
+        ],
+        splitDeclarations: 1,
+      },
+    };
+
+    const patch = await generatePatchForCycle(repoPath, cycle, analysis);
+
+    expect(patch).not.toBeNull();
+    expect(patch?.patchText).toContain("import type { FooConfig } from './index';");
+    expect(patch?.patchText).toContain("import { makeFoo } from './foo';");
+    expect(patch?.touchedFiles).toEqual(['app.ts']);
+  });
+
   it('creates a localized host-state update patch without introducing a new file', async () => {
     const repoPath = await createRepo({
       'a.ts': [

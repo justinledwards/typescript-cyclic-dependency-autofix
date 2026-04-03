@@ -176,6 +176,44 @@ describe('semantic graph core', () => {
     );
   });
 
+  it('tags mixed type/runtime split patterns when a barrel exposes both type and value imports', () => {
+    project.createSourceFile(
+      path.join(REPO_ROOT, 'app.ts'),
+      `
+      import type { FooConfig } from './index';
+      import { makeFoo } from './index';
+      export const appValue = makeFoo();
+      export type AppConfig = FooConfig & { enabled: boolean };
+    `,
+    );
+    project.createSourceFile(
+      path.join(REPO_ROOT, 'index.ts'),
+      `
+      import { appValue } from './app';
+      export { makeFoo } from './foo';
+      export type { FooConfig } from './foo';
+      export const indexValue = appValue;
+    `,
+    );
+    project.createSourceFile(
+      path.join(REPO_ROOT, 'foo.ts'),
+      `
+      export interface FooConfig {
+        value: number;
+      }
+      export const makeFoo = () => 1;
+    `,
+    );
+
+    const graph = buildCycleGraph(createGraphArgs(project, ['app.ts', 'index.ts', 'app.ts']));
+
+    expect(graph.metrics).toMatchObject({
+      cycleTypeEdgeCount: 1,
+      cycleValueEdgeCount: 2,
+    });
+    expect(graph.patternCategories).toEqual(expect.arrayContaining(['type_runtime_split', 'type_value_split']));
+  });
+
   it('tags ownership-localization edges in two-file setter cycles', () => {
     project.createSourceFile(
       path.join(REPO_ROOT, 'chat.ts'),

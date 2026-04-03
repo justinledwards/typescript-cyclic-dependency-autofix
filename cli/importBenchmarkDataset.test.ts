@@ -77,7 +77,7 @@ describe('importBenchmarkDataset', () => {
       source: 'dataset:swe-bench-multilingual',
       commit_sha: 'abc123',
     });
-    expect(JSON.parse(cases[0].strategy_labels)).toEqual(expect.arrayContaining(['import_type', 'type_runtime_split']));
+    expect(JSON.parse(cases[0].strategy_labels)).toEqual(expect.arrayContaining(['import_type']));
     expect(JSON.parse(cases[0].validation_signals)).toMatchObject({
       dataset_name: 'swe-bench-multilingual',
       imported: true,

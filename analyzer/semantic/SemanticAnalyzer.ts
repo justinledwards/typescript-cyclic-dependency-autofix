@@ -4,6 +4,7 @@ import {
   type FunctionDeclaration,
   type Identifier,
   type ImportDeclaration,
+  type ImportSpecifier,
   Node,
   Project,
   type SourceFile,
@@ -22,6 +23,8 @@ import {
   scoreExtractSharedPlan,
   scoreHostStateUpdatePlan,
   scoreImportTypePlan,
+  scorePublicSeamBypassPlan,
+  scoreTypeRuntimeSplitPlan,
   selectBestAttempt,
 } from './scoring.js';
 import type {
@@ -35,6 +38,7 @@ import type {
   SemanticAnalysisResult,
   StrategyAttempt,
   StrategyDefinition,
+  TypeRuntimeSplitFixPlan,
 } from './types.js';
 import { missingCycleFilesReason } from './types.js';
 
@@ -232,6 +236,66 @@ export class SemanticAnalyzer {
 
           return this.evaluateImportTypeAttempt(fileA ?? '', fileB ?? '', context.importsAToB, context.importsBToA);
         },
+      },
+      {
+        strategy: 'type_runtime_split',
+        describeApplicability: (context) => ({
+          applicable: context.cycleShape === 'two_file',
+          summary:
+            context.cycleShape === 'two_file'
+              ? 'Mixed type/runtime import splitting can be evaluated for two-file cycles.'
+              : 'Mixed type/runtime splitting is only supported for two-file cycles.',
+          signals: {
+            cycleShape: context.cycleShape,
+            cycleSize: context.uniqueFiles.length,
+            typeEdgeCount: context.graphSummary.metrics.cycleTypeEdgeCount ?? 0,
+            valueEdgeCount: context.graphSummary.metrics.cycleValueEdgeCount ?? 0,
+          },
+        }),
+        evaluate: (context) => {
+          const [fileA, fileB] = context.uniqueFiles;
+          const sourceFileA = fileA ? context.sourceFiles.get(fileA) : undefined;
+          const sourceFileB = fileB ? context.sourceFiles.get(fileB) : undefined;
+
+          if (!fileA || !fileB || !sourceFileA || !sourceFileB) {
+            return createRejectedAttempt('type_runtime_split', missingCycleFilesReason, [missingCycleFilesReason], {
+              fileA: fileA ?? 'unknown',
+              fileB: fileB ?? 'unknown',
+            });
+          }
+
+          return this.evaluateTypeRuntimeSplitAttempt(
+            fileA,
+            fileB,
+            sourceFileA,
+            sourceFileB,
+            context.importsAToB,
+            context.importsBToA,
+            context.graphSummary,
+          );
+        },
+      },
+      {
+        strategy: 'public_seam_bypass',
+        describeApplicability: (context) => ({
+          applicable: context.cycleShape === 'multi_file',
+          summary:
+            (context.graphSummary.patternCategories ?? []).includes('public_seam_bypass') ||
+            (context.graphSummary.patternCategories ?? []).includes('export_graph_rewrite') ||
+            (context.graphSummary.metrics.publicSeamModuleCount ?? 0) > 0 ||
+            (context.graphSummary.metrics.cyclePublicSeamEdgeCount ?? 0) > 0
+              ? 'Public-seam bypassing can be evaluated for multi-file cycles with a concrete seam.'
+              : 'Public-seam bypassing only applies to multi-file cycles with a seam category.',
+          signals: {
+            cycleShape: context.cycleShape,
+            cycleSize: context.uniqueFiles.length,
+            patternCategories: (context.graphSummary.patternCategories ?? []).join(','),
+            patternCategoryCount: context.graphSummary.patternCategories?.length ?? 0,
+            publicSeamModuleCount: context.graphSummary.metrics.publicSeamModuleCount ?? 0,
+            cyclePublicSeamEdgeCount: context.graphSummary.metrics.cyclePublicSeamEdgeCount ?? 0,
+          },
+        }),
+        evaluate: (context) => this.evaluatePublicSeamBypassAttempt(context.uniqueFiles, context.graphSummary),
       },
       {
         strategy: 'direct_import',
@@ -436,6 +500,57 @@ export class SemanticAnalyzer {
     };
   }
 
+  private evaluateTypeRuntimeSplitAttempt(
+    fileA: string,
+    fileB: string,
+    sourceFileA: SourceFile,
+    sourceFileB: SourceFile,
+    importsAToB: ImportDeclaration[],
+    importsBToA: ImportDeclaration[],
+    graphSummary: CyclePlanningContext['graphSummary'],
+  ): StrategyAttempt {
+    const splitPlan = this.buildTypeRuntimeSplitPlan(
+      fileA,
+      fileB,
+      sourceFileA,
+      sourceFileB,
+      importsAToB,
+      importsBToA,
+      graphSummary,
+    );
+
+    if (!splitPlan) {
+      return createRejectedAttempt(
+        'type_runtime_split',
+        'No mixed type/runtime import declaration could be split safely.',
+        [
+          'Imports crossing the cycle were either already type-only, entirely runtime-used, or did not have enough mixed usage to justify a split.',
+        ],
+        {
+          importEdgeCount: importsAToB.length + importsBToA.length,
+          fileA,
+          fileB,
+        },
+      );
+    }
+
+    const scoring = scoreTypeRuntimeSplitPlan(splitPlan);
+    return {
+      strategy: 'type_runtime_split',
+      status: 'candidate',
+      summary: `Split ${splitPlan.splitDeclarations} mixed import declaration(s) into type-only and runtime imports.`,
+      reasons: [
+        `Cycle can be resolved by splitting mixed type/runtime imports across ${splitPlan.imports.length} edge(s) without introducing a new file.`,
+      ],
+      signals: scoring.signals,
+      score: scoring.score,
+      scoreBreakdown: scoring.breakdown,
+      classification: 'autofix_type_runtime_split',
+      confidence: 0.88,
+      plan: splitPlan,
+    };
+  }
+
   private evaluateExtractSharedAttempt(
     fileA: string,
     fileB: string,
@@ -536,6 +651,78 @@ export class SemanticAnalyzer {
     };
   }
 
+  private evaluatePublicSeamBypassAttempt(
+    cycleFiles: string[],
+    graphSummary: CyclePlanningContext['graphSummary'],
+  ): StrategyAttempt {
+    const directImportResult = findDirectImportPlanFromGraph(graphSummary, cycleFiles);
+    if (!directImportResult.plan || directImportResult.plan.length === 0) {
+      if (directImportResult.ambiguousResolution) {
+        return createRejectedAttempt(
+          'public_seam_bypass',
+          'Public seam bypass is ambiguous or side-effectful.',
+          ['The public seam resolves ambiguously or traverses a side-effectful re-export chain.'],
+          {
+            cycleSize: cycleFiles.length,
+          },
+        );
+      }
+
+      return createRejectedAttempt(
+        'public_seam_bypass',
+        'No safe public-seam bypass was found for this cycle.',
+        ['No concrete public seam could be resolved to a single internal target.'],
+        {
+          cycleSize: cycleFiles.length,
+        },
+      );
+    }
+
+    const seamImportCount = directImportResult.plan.filter((plan) => {
+      const normalizedBarrel = plan.barrelFile.toLowerCase();
+      return (
+        normalizedBarrel.includes('/api.') ||
+        normalizedBarrel.startsWith('api.') ||
+        normalizedBarrel.includes('/plugin-sdk/') ||
+        normalizedBarrel.includes('/setup-surface.') ||
+        normalizedBarrel.startsWith('setup-surface.') ||
+        normalizedBarrel.includes('/setup-core.') ||
+        normalizedBarrel.startsWith('setup-core.')
+      );
+    }).length;
+
+    if (seamImportCount === 0) {
+      return createRejectedAttempt(
+        'public_seam_bypass',
+        'No safe public seam bypass was found for this cycle.',
+        ['The resolved direct-import candidate does not cross a public API or setup seam.'],
+        {
+          cycleSize: cycleFiles.length,
+        },
+      );
+    }
+
+    const scoring = scorePublicSeamBypassPlan(directImportResult.plan);
+    const firstPlan = directImportResult.plan[0];
+    return {
+      strategy: 'public_seam_bypass',
+      status: 'candidate',
+      summary: `Bypass ${directImportResult.plan.length} public seam import edge(s) to import concrete symbols directly.`,
+      reasons: [
+        `Cycle can be resolved by bypassing the public seam ${firstPlan.barrelFile} and importing ${firstPlan.symbols.join(', ')} from ${firstPlan.targetFile}.`,
+      ],
+      signals: scoring.signals,
+      score: scoring.score,
+      scoreBreakdown: scoring.breakdown,
+      classification: 'autofix_public_seam_bypass',
+      confidence: 0.9,
+      plan: {
+        kind: 'public_seam_bypass',
+        imports: directImportResult.plan,
+      },
+    };
+  }
+
   private evaluateHostStateUpdateAttempt(
     fileA: string,
     fileB: string,
@@ -577,6 +764,40 @@ export class SemanticAnalyzer {
       classification: 'autofix_host_state_update',
       confidence: 0.84,
       plan,
+    };
+  }
+
+  private buildTypeRuntimeSplitPlan(
+    fileA: string,
+    fileB: string,
+    sourceFileA: SourceFile,
+    sourceFileB: SourceFile,
+    importsAToB: ImportDeclaration[],
+    importsBToA: ImportDeclaration[],
+    graphSummary: CyclePlanningContext['graphSummary'],
+  ): TypeRuntimeSplitFixPlan | undefined {
+    const resolutionMap = new Map(
+      graphSummary.exportResolutions.map((resolution) => [
+        `${resolution.barrelFile}::${resolution.exportedName}`,
+        resolution,
+      ]),
+    );
+    const imports: TypeRuntimeSplitFixPlan['imports'] = [];
+    const splitCandidates = [
+      this.collectTypeRuntimeSplitCandidate(sourceFileA, fileA, fileB, importsAToB, resolutionMap),
+      this.collectTypeRuntimeSplitCandidate(sourceFileB, fileB, fileA, importsBToA, resolutionMap),
+    ].filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined);
+
+    imports.push(...splitCandidates);
+
+    if (imports.length === 0) {
+      return undefined;
+    }
+
+    return {
+      kind: 'type_runtime_split',
+      imports,
+      splitDeclarations: imports.reduce((count, entry) => count + entry.splitDeclarations, 0),
     };
   }
 
@@ -672,6 +893,205 @@ export class SemanticAnalyzer {
     return importPlans;
   }
 
+  private collectTypeRuntimeSplitCandidate(
+    sourceFile: SourceFile | undefined,
+    sourceFilePath: string,
+    barrelFile: string,
+    importDeclarations: ImportDeclaration[],
+    resolutionMap: Map<string, { targetFile: string | null; targetSymbol: string | null; ambiguous: boolean }>,
+  ):
+    | {
+        sourceFile: string;
+        barrelFile: string;
+        targetFile: string;
+        typeOnlySymbols: string[];
+        runtimeSymbols: string[];
+        splitDeclarations: number;
+      }
+    | undefined {
+    if (!sourceFile) {
+      return undefined;
+    }
+
+    const barrelPath = path.resolve(this.repoPath, barrelFile);
+    const splitCandidates = importDeclarations
+      .map((importDecl) =>
+        this.buildTypeRuntimeSplitCandidate(
+          sourceFile,
+          sourceFilePath,
+          barrelFile,
+          barrelPath,
+          importDecl,
+          resolutionMap,
+        ),
+      )
+      .filter(
+        (
+          candidate,
+        ): candidate is {
+          sourceFile: string;
+          barrelFile: string;
+          targetFile: string;
+          typeOnlySymbols: string[];
+          runtimeSymbols: string[];
+          splitDeclarations: number;
+        } => candidate !== undefined,
+      );
+
+    if (splitCandidates.length === 0) {
+      return undefined;
+    }
+
+    const typeOnlySymbols = new Set<string>();
+    const runtimeSymbols = new Set<string>();
+    let targetFile: string | undefined;
+
+    for (const candidate of splitCandidates) {
+      for (const symbol of candidate.typeOnlySymbols) {
+        typeOnlySymbols.add(symbol);
+      }
+      for (const symbol of candidate.runtimeSymbols) {
+        runtimeSymbols.add(symbol);
+      }
+      if (targetFile && targetFile !== candidate.targetFile) {
+        return undefined;
+      }
+      targetFile = candidate.targetFile;
+    }
+
+    if (typeOnlySymbols.size === 0 || runtimeSymbols.size === 0 || !targetFile) {
+      return undefined;
+    }
+
+    return {
+      sourceFile: sourceFilePath,
+      barrelFile,
+      targetFile,
+      typeOnlySymbols: [...typeOnlySymbols],
+      runtimeSymbols: [...runtimeSymbols],
+      splitDeclarations: splitCandidates.reduce((count, candidate) => count + candidate.splitDeclarations, 0),
+    };
+  }
+
+  private buildTypeRuntimeSplitCandidate(
+    sourceFile: SourceFile,
+    sourceFilePath: string,
+    barrelFile: string,
+    barrelPath: string,
+    importDecl: ImportDeclaration,
+    resolutionMap: Map<string, { targetFile: string | null; targetSymbol: string | null; ambiguous: boolean }>,
+  ):
+    | {
+        sourceFile: string;
+        barrelFile: string;
+        targetFile: string;
+        typeOnlySymbols: string[];
+        runtimeSymbols: string[];
+        splitDeclarations: number;
+      }
+    | undefined {
+    if (!this.resolvesToFile(sourceFile, importDecl.getModuleSpecifierValue(), barrelPath)) {
+      return undefined;
+    }
+
+    if (importDecl.getDefaultImport() || importDecl.getNamespaceImport()) {
+      return undefined;
+    }
+
+    const classification = this.classifyTypeRuntimeImportDeclaration(importDecl);
+    if (!classification || classification.typeOnlySymbols.length === 0 || classification.runtimeSymbols.length === 0) {
+      return undefined;
+    }
+
+    const targetFile = this.resolveTypeRuntimeSplitTargetFile(barrelFile, classification.runtimeSymbols, resolutionMap);
+    if (!targetFile) {
+      return undefined;
+    }
+
+    return {
+      sourceFile: sourceFilePath,
+      barrelFile,
+      targetFile,
+      typeOnlySymbols: classification.typeOnlySymbols,
+      runtimeSymbols: classification.runtimeSymbols,
+      splitDeclarations: 1,
+    };
+  }
+
+  private resolveTypeRuntimeSplitTargetFile(
+    barrelFile: string,
+    runtimeSymbols: string[],
+    resolutionMap: Map<string, { targetFile: string | null; targetSymbol: string | null; ambiguous: boolean }>,
+  ): string | undefined {
+    let targetFile: string | undefined;
+
+    for (const symbol of runtimeSymbols) {
+      const resolution = resolutionMap.get(`${barrelFile}::${symbol}`);
+      if (!resolution || resolution.ambiguous || !resolution.targetFile || resolution.targetFile === barrelFile) {
+        return undefined;
+      }
+
+      if (targetFile && targetFile !== resolution.targetFile) {
+        return undefined;
+      }
+
+      targetFile = resolution.targetFile;
+    }
+
+    return targetFile;
+  }
+
+  private classifyTypeRuntimeImportDeclaration(importDecl: ImportDeclaration):
+    | {
+        typeOnlySymbols: string[];
+        runtimeSymbols: string[];
+      }
+    | undefined {
+    if (importDecl.getDefaultImport() || importDecl.getNamespaceImport()) {
+      return undefined;
+    }
+
+    const typeOnlySymbols: string[] = [];
+    const runtimeSymbols: string[] = [];
+
+    for (const namedImport of importDecl.getNamedImports()) {
+      const bindingName = this.getImportLocalName(namedImport);
+      const usage = this.classifyImportedBindingUsage(namedImport);
+      if (usage === 'type_only') {
+        typeOnlySymbols.push(bindingName);
+        continue;
+      }
+
+      if (usage === 'value') {
+        runtimeSymbols.push(bindingName);
+      }
+    }
+
+    if (typeOnlySymbols.length === 0 && runtimeSymbols.length === 0) {
+      return undefined;
+    }
+
+    return {
+      typeOnlySymbols,
+      runtimeSymbols,
+    };
+  }
+
+  private classifyImportedBindingUsage(namedImport: ImportSpecifier): 'type_only' | 'value' | undefined {
+    const bindingNode = namedImport.getAliasNode() ?? (namedImport.getNameNode() as Identifier);
+    const references = bindingNode.findReferencesAsNodes().filter((node) => node !== bindingNode);
+
+    if (references.length === 0) {
+      return undefined;
+    }
+
+    if (references.some((reference) => !this.isInTypePosition(reference))) {
+      return 'value';
+    }
+
+    return 'type_only';
+  }
+
   private buildHostStateUpdatePlan(
     sourceFilePath: string,
     targetFilePath: string,
@@ -709,7 +1129,7 @@ export class SemanticAnalyzer {
     targetFilePath: string,
     sourceFile: SourceFile,
     targetFile: SourceFile,
-    namedImport: { getAliasNode(): Identifier | undefined; getName(): string },
+    namedImport: ImportSpecifier,
     targetModuleKey: string,
   ): HostStateUpdateFixPlan | undefined {
     const importedFunction = this.getImportLocalName(namedImport);
@@ -1222,6 +1642,22 @@ export class SemanticAnalyzer {
     return undefined;
   }
 
+  private resolvesToFile(sourceFile: SourceFile, moduleSpecifier: string, targetFilePath: string): boolean {
+    const resolvedModulePath = this.resolveModulePath(sourceFile.getFilePath(), moduleSpecifier);
+    if (!resolvedModulePath) {
+      return false;
+    }
+
+    return (
+      this.stripKnownExtensions(path.resolve(resolvedModulePath)) ===
+      this.stripKnownExtensions(path.resolve(targetFilePath))
+    );
+  }
+
+  private stripKnownExtensions(filePath: string): string {
+    return filePath.replace(/\.(ts|tsx|js|jsx)$/, '');
+  }
+
   private toRepoRelativePath(absolutePath: string): string {
     return path.relative(this.repoPath, absolutePath).split(path.sep).join('/');
   }
@@ -1252,7 +1688,7 @@ export class SemanticAnalyzer {
     return imports;
   }
 
-  private getImportLocalName(namedImport: { getAliasNode(): Identifier | undefined; getName(): string }): string {
+  private getImportLocalName(namedImport: ImportSpecifier): string {
     return namedImport.getAliasNode()?.getText() ?? namedImport.getName();
   }
 

@@ -78,7 +78,11 @@ export function classifyStrategyLabels(commitText: string, changedPaths: string[
 
   if (/import\s+type|type-only|type only/.test(lowerText)) {
     labels.add('import_type');
+  }
+
+  if (/mixed import|split import|type runtime|type-value|type\/runtime/.test(lowerText)) {
     labels.add('type_runtime_split');
+    labels.add('type_value_split');
   }
 
   if (/barrel|re-?export|index\.(ts|tsx|js|jsx)/.test(lowerText)) {

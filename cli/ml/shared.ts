@@ -15,7 +15,14 @@ export const LogisticRegression = require('ml-logistic-regression');
 export const ML_DATASET_SCHEMA_VERSION = 2;
 export const DEFAULT_ML_EXPORT_DIR = path.join(process.cwd(), 'exports', 'ml');
 export const DEFAULT_ML_ARTIFACT_DIR = path.join(process.cwd(), 'artifacts', 'ml');
-export const SAFE_ML_STRATEGIES = new Set(['import_type', 'direct_import', 'extract_shared', 'host_state_update']);
+export const SAFE_ML_STRATEGIES = new Set([
+  'import_type',
+  'type_runtime_split',
+  'direct_import',
+  'public_seam_bypass',
+  'extract_shared',
+  'host_state_update',
+]);
 
 const TEXT_EXCLUSION_PATTERN =
   /(summary|reason|note|notes|body|title|text|url|file|path|sha|slug|normalized|commit|repository)/i;
@@ -406,21 +413,26 @@ function chooseCanonicalStrategy(cycle: MlCyclePatternRow): string {
   if (categories.has('ownership_localization') || categories.has('host_owned_state_update')) {
     return 'host_state_update';
   }
-  if (
-    categories.has('public_seam_bypass') ||
-    categories.has('export_graph_rewrite') ||
-    categories.has('barrel_reexport_cleanup')
-  ) {
-    return 'direct_import';
+  if (categories.has('public_seam_bypass') || categories.has('export_graph_rewrite')) {
+    return 'public_seam_bypass';
   }
-  if (categories.has('type_value_split')) {
-    return 'import_type';
+  if (categories.has('type_runtime_split') || categories.has('type_value_split')) {
+    return 'type_runtime_split';
+  }
+  if (categories.has('barrel_reexport_cleanup')) {
+    return 'direct_import';
   }
   return cycle.selectedStrategy ?? 'extract_shared';
 }
 
 function chooseHardNegativeStrategy(positiveStrategy: string, cycle: MlCyclePatternRow): string {
   const categories = new Set(cycle.featureColumns.multiLabel.patternCategories);
+  if (positiveStrategy === 'type_runtime_split') {
+    return categories.has('public_seam_bypass') ? 'public_seam_bypass' : 'extract_shared';
+  }
+  if (positiveStrategy === 'public_seam_bypass') {
+    return 'direct_import';
+  }
   if (positiveStrategy === 'host_state_update') {
     return 'extract_shared';
   }
@@ -438,8 +450,14 @@ function strategyToClassification(strategy: string): string {
     case 'host_state_update': {
       return 'autofix_host_state_update';
     }
+    case 'public_seam_bypass': {
+      return 'autofix_public_seam_bypass';
+    }
     case 'direct_import': {
       return 'autofix_direct_import';
+    }
+    case 'type_runtime_split': {
+      return 'autofix_type_runtime_split';
     }
     case 'import_type': {
       return 'autofix_import_type';
@@ -1319,8 +1337,14 @@ function classificationToStrategy(classification: string | null | undefined): st
     case 'autofix_import_type': {
       return 'import_type';
     }
+    case 'autofix_type_runtime_split': {
+      return 'type_runtime_split';
+    }
     case 'autofix_direct_import': {
       return 'direct_import';
+    }
+    case 'autofix_public_seam_bypass': {
+      return 'public_seam_bypass';
     }
     case 'autofix_extract_shared': {
       return 'extract_shared';

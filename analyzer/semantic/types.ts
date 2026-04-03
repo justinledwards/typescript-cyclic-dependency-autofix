@@ -9,8 +9,31 @@ export interface ImportTypeFixPlan {
   }>;
 }
 
+export interface TypeRuntimeSplitFixPlan {
+  kind: 'type_runtime_split';
+  imports: Array<{
+    sourceFile: string;
+    barrelFile: string;
+    targetFile: string;
+    typeOnlySymbols: string[];
+    runtimeSymbols: string[];
+    splitDeclarations: number;
+  }>;
+  splitDeclarations: number;
+}
+
 export interface DirectImportFixPlan {
   kind: 'direct_import';
+  imports: Array<{
+    sourceFile: string;
+    barrelFile: string;
+    targetFile: string;
+    symbols: string[];
+  }>;
+}
+
+export interface PublicSeamBypassFixPlan {
+  kind: 'public_seam_bypass';
   imports: Array<{
     sourceFile: string;
     barrelFile: string;
@@ -42,7 +65,13 @@ export interface HostStateUpdateFixPlan {
   trimValue: boolean;
 }
 
-export type PlanningStrategy = 'import_type' | 'direct_import' | 'extract_shared' | 'host_state_update';
+export type PlanningStrategy =
+  | 'import_type'
+  | 'type_runtime_split'
+  | 'direct_import'
+  | 'public_seam_bypass'
+  | 'extract_shared'
+  | 'host_state_update';
 export type StrategySignalValue = boolean | number | string;
 
 export interface GraphModuleSummary {
@@ -221,7 +250,13 @@ export interface StrategyAttempt {
   scoreBreakdown?: string[];
   classification?: Classification;
   confidence?: number;
-  plan?: ImportTypeFixPlan | DirectImportFixPlan | ExtractSharedFixPlan | HostStateUpdateFixPlan;
+  plan?:
+    | ImportTypeFixPlan
+    | TypeRuntimeSplitFixPlan
+    | DirectImportFixPlan
+    | PublicSeamBypassFixPlan
+    | ExtractSharedFixPlan
+    | HostStateUpdateFixPlan;
 }
 
 export interface CyclePlanningResult {
@@ -246,7 +281,13 @@ export interface SemanticAnalysisResult {
   classification: Classification;
   confidence: number;
   reasons: string[];
-  plan?: ImportTypeFixPlan | DirectImportFixPlan | ExtractSharedFixPlan | HostStateUpdateFixPlan;
+  plan?:
+    | ImportTypeFixPlan
+    | TypeRuntimeSplitFixPlan
+    | DirectImportFixPlan
+    | PublicSeamBypassFixPlan
+    | ExtractSharedFixPlan
+    | HostStateUpdateFixPlan;
   upstreamabilityScore?: number;
   planner?: CyclePlanningResult;
 }

@@ -93,7 +93,7 @@ describe('mineBenchmarkCasesFromRepo', () => {
     expect(importTypeCase).toBeDefined();
     expect(importTypeCase?.url).toBe('https://github.com/acme/widget/commit/abc123');
     expect(JSON.parse(importTypeCase?.strategy_labels ?? '[]')).toEqual(
-      expect.arrayContaining(['import_type', 'type_runtime_split', 'barrel_reexport_cleanup', 'direct_import']),
+      expect.arrayContaining(['import_type', 'barrel_reexport_cleanup', 'direct_import']),
     );
     expect(JSON.parse(importTypeCase?.matched_terms ?? '[]')).toEqual(
       expect.arrayContaining(['circular dependency', 'import type', 'barrel']),

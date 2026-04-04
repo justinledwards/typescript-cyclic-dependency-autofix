@@ -1040,6 +1040,10 @@ function inferGraphPatternCategories(args: {
   if (args.cycleEdgeMetrics.cyclePublicSeamEdgeCount > 0) {
     labels.add('public_seam_bypass');
   }
+  if (args.cycleEdgeMetrics.cycleTypeEdgeCount > 0 && args.cycleEdgeMetrics.cycleValueEdgeCount > 0) {
+    labels.add('type_runtime_split');
+    labels.add('type_value_split');
+  }
   if (
     args.exportEdges.length > 0 &&
     (args.cycleEdgeMetrics.cyclePublicSeamEdgeCount > 0 ||

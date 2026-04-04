@@ -238,7 +238,7 @@ describe('SemanticAnalyzer', () => {
     });
   });
 
-  it('detects direct_import for mixed public API seams that re-export a safe leaf symbol', () => {
+  it('prefers public_seam_bypass for mixed public API seams that re-export a safe leaf symbol', () => {
     analyzer.project.createSourceFile(
       '/dummy/repo/app.ts',
       `
@@ -265,14 +265,14 @@ describe('SemanticAnalyzer', () => {
 
     const result = analyzer.analyzeCycle(['app.ts', 'api.ts', 'bar.ts', 'app.ts']);
 
-    expect(result.classification).toBe('autofix_direct_import');
-    expect(result.planner?.selectedStrategy).toBe('direct_import');
+    expect(result.classification).toBe('autofix_public_seam_bypass');
+    expect(result.planner?.selectedStrategy).toBe('public_seam_bypass');
     expect(result.planner?.rankedCandidates[0]?.signals).toMatchObject({
       bypassesBarrel: true,
       bypassesPublicSeam: true,
     });
     expect(result.plan).toEqual({
-      kind: 'direct_import',
+      kind: 'public_seam_bypass',
       imports: [
         {
           sourceFile: 'app.ts',
@@ -281,6 +281,106 @@ describe('SemanticAnalyzer', () => {
           symbols: ['Foo'],
         },
       ],
+    });
+  });
+
+  it('prefers public_seam_bypass for public API seams that resolve to a concrete leaf target', () => {
+    analyzer.project.createSourceFile(
+      '/dummy/repo/app.ts',
+      `
+      import { Foo } from './api';
+      export const appValue = Foo + 1;
+    `,
+    );
+    analyzer.project.createSourceFile(
+      '/dummy/repo/api.ts',
+      `
+      export { Foo } from './foo';
+      export { Bar } from './bar';
+      export const apiVersion = '1';
+    `,
+    );
+    analyzer.project.createSourceFile('/dummy/repo/foo.ts', 'export const Foo = 1;');
+    analyzer.project.createSourceFile(
+      '/dummy/repo/bar.ts',
+      `
+      import { appValue } from './app';
+      export const Bar = appValue + 1;
+    `,
+    );
+
+    const result = analyzer.analyzeCycle(['app.ts', 'api.ts', 'bar.ts', 'app.ts']);
+
+    expect(result.classification).toBe('autofix_public_seam_bypass');
+    expect(result.planner?.selectedStrategy).toBe('public_seam_bypass');
+    expect(result.planner?.rankedCandidates[0]?.signals).toMatchObject({
+      bypassesBarrel: true,
+      bypassesPublicSeam: true,
+      publicSeamBypassImports: 1,
+    });
+    expect(result.plan).toEqual({
+      kind: 'public_seam_bypass',
+      imports: [
+        {
+          sourceFile: 'app.ts',
+          barrelFile: 'api.ts',
+          targetFile: 'foo.ts',
+          symbols: ['Foo'],
+        },
+      ],
+    });
+  });
+
+  it('splits mixed type and runtime imports when a barrel exposes separate type and value targets', () => {
+    analyzer.project.createSourceFile(
+      '/dummy/repo/app.ts',
+      `
+      import { type FooConfig, makeFoo } from './index';
+      export const appValue = makeFoo();
+      export type AppConfig = FooConfig & { enabled: boolean };
+    `,
+    );
+    analyzer.project.createSourceFile(
+      '/dummy/repo/index.ts',
+      `
+      import { appValue } from './app';
+      export { makeFoo } from './foo';
+      export type { FooConfig } from './foo';
+      export const indexValue = appValue;
+    `,
+    );
+    analyzer.project.createSourceFile(
+      '/dummy/repo/foo.ts',
+      `
+      export interface FooConfig {
+        value: number;
+      }
+      export const makeFoo = () => 1;
+    `,
+    );
+
+    const result = analyzer.analyzeCycle(['app.ts', 'index.ts', 'app.ts']);
+
+    expect(result.classification).toBe('autofix_type_runtime_split');
+    expect(result.planner?.selectedStrategy).toBe('type_runtime_split');
+    expect(result.planner?.rankedCandidates[0]?.signals).toMatchObject({
+      splitDeclarations: 1,
+      runtimeSymbolCount: 1,
+      typeOnlySymbolCount: 1,
+    });
+    expect(result.plan).toEqual({
+      kind: 'type_runtime_split',
+      imports: [
+        {
+          sourceFile: 'app.ts',
+          barrelFile: 'index.ts',
+          targetFile: 'foo.ts',
+          typeOnlySymbols: ['FooConfig'],
+          runtimeSymbols: ['makeFoo'],
+          splitDeclarations: 1,
+        },
+      ],
+      splitDeclarations: 1,
     });
   });
 
@@ -298,6 +398,52 @@ describe('SemanticAnalyzer', () => {
         totalValidatedPatches: 4,
         strategies: {
           import_type: {
+            benchmarkMatches: 0,
+            profileMatches: 0,
+            approvedReviews: 0,
+            rejectedReviews: 0,
+            prCandidates: 0,
+            ignoredReviews: 0,
+            passedValidations: 0,
+            failedValidations: 0,
+            acceptedBenchmarks: 0,
+            rejectedBenchmarks: 0,
+            needsReviewBenchmarks: 0,
+            acceptanceProfileMatches: 0,
+            semanticWrongRejections: 0,
+            repoConventionsMismatchRejections: 0,
+            diffNoisyRejections: 0,
+            validationWeakRejections: 0,
+            otherRejections: 0,
+            originalCyclePersistedFailures: 0,
+            newCyclesIntroducedFailures: 0,
+            repoValidationFailures: 0,
+            typecheckFailures: 0,
+          },
+          type_runtime_split: {
+            benchmarkMatches: 0,
+            profileMatches: 0,
+            approvedReviews: 0,
+            rejectedReviews: 0,
+            prCandidates: 0,
+            ignoredReviews: 0,
+            passedValidations: 0,
+            failedValidations: 0,
+            acceptedBenchmarks: 0,
+            rejectedBenchmarks: 0,
+            needsReviewBenchmarks: 0,
+            acceptanceProfileMatches: 0,
+            semanticWrongRejections: 0,
+            repoConventionsMismatchRejections: 0,
+            diffNoisyRejections: 0,
+            validationWeakRejections: 0,
+            otherRejections: 0,
+            originalCyclePersistedFailures: 0,
+            newCyclesIntroducedFailures: 0,
+            repoValidationFailures: 0,
+            typecheckFailures: 0,
+          },
+          public_seam_bypass: {
             benchmarkMatches: 0,
             profileMatches: 0,
             approvedReviews: 0,
@@ -459,6 +605,26 @@ describe('SemanticAnalyzer', () => {
         totalValidatedPatches: 3,
         strategies: {
           import_type: {
+            benchmarkMatches: 0,
+            profileMatches: 0,
+            approvedReviews: 0,
+            rejectedReviews: 0,
+            prCandidates: 0,
+            ignoredReviews: 0,
+            passedValidations: 0,
+            failedValidations: 0,
+          },
+          type_runtime_split: {
+            benchmarkMatches: 0,
+            profileMatches: 0,
+            approvedReviews: 0,
+            rejectedReviews: 0,
+            prCandidates: 0,
+            ignoredReviews: 0,
+            passedValidations: 0,
+            failedValidations: 0,
+          },
+          public_seam_bypass: {
             benchmarkMatches: 0,
             profileMatches: 0,
             approvedReviews: 0,

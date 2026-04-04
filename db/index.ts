@@ -212,6 +212,8 @@ export type Classification =
   | 'autofix_extract_shared'
   | 'autofix_direct_import'
   | 'autofix_import_type'
+  | 'autofix_type_runtime_split'
+  | 'autofix_public_seam_bypass'
   | 'autofix_host_state_update'
   | 'suggest_manual'
   | 'unsupported';
@@ -534,7 +536,9 @@ function ensureFixCandidateSchema(database: DatabaseType): void {
     UPDATE fix_candidates
     SET strategy = CASE classification
       WHEN 'autofix_import_type' THEN 'import_type'
+      WHEN 'autofix_type_runtime_split' THEN 'type_runtime_split'
       WHEN 'autofix_direct_import' THEN 'direct_import'
+      WHEN 'autofix_public_seam_bypass' THEN 'public_seam_bypass'
       WHEN 'autofix_extract_shared' THEN 'extract_shared'
       WHEN 'autofix_host_state_update' THEN 'host_state_update'
       ELSE strategy

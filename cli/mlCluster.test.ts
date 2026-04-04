@@ -19,6 +19,7 @@ describe('mlCluster', () => {
       summary: {
         cyclePatterns: 4,
         candidateRanking: 0,
+        syntheticFixtures: 0,
         candidatePreferences: 0,
       },
       cyclePatterns: [
@@ -28,6 +29,7 @@ describe('mlCluster', () => {
         createCyclePatternRow('cycle-4', 'acme/b', 'direct_import', ['public_seam_bypass'], 5, 0),
       ],
       candidateRanking: [],
+      syntheticFixtures: [],
       candidatePreferences: [],
     };
 

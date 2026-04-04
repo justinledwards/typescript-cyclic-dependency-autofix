@@ -7,11 +7,20 @@ import type {
   StrategyHistoricalEvidence,
 } from './types.js';
 
-const STRATEGIES: PlanningStrategy[] = ['import_type', 'direct_import', 'extract_shared', 'host_state_update'];
+const STRATEGIES: PlanningStrategy[] = [
+  'import_type',
+  'type_runtime_split',
+  'direct_import',
+  'public_seam_bypass',
+  'extract_shared',
+  'host_state_update',
+];
 
 const STRATEGY_LABELS: Record<PlanningStrategy, string[]> = {
-  import_type: ['import_type', 'type_runtime_split'],
-  direct_import: ['direct_import', 'barrel_reexport_cleanup', 'public_seam_bypass', 'export_graph_rewrite'],
+  import_type: ['import_type', 'type-only'],
+  type_runtime_split: ['type_runtime_split', 'type_value_split'],
+  direct_import: ['direct_import', 'barrel_reexport_cleanup'],
+  public_seam_bypass: ['public_seam_bypass', 'export_graph_rewrite'],
   extract_shared: ['extract_shared', 'leaf_cluster_extraction'],
   host_state_update: [
     'host_owned_state_update',
@@ -23,7 +32,9 @@ const STRATEGY_LABELS: Record<PlanningStrategy, string[]> = {
 
 const CLASSIFICATION_TO_STRATEGY: Partial<Record<string, PlanningStrategy>> = {
   autofix_import_type: 'import_type',
+  autofix_type_runtime_split: 'type_runtime_split',
   autofix_direct_import: 'direct_import',
+  autofix_public_seam_bypass: 'public_seam_bypass',
   autofix_extract_shared: 'extract_shared',
   autofix_host_state_update: 'host_state_update',
 };
@@ -66,7 +77,9 @@ export function createEmptyHistoricalEvidenceSnapshot(): HistoricalEvidenceSnaps
     totalValidatedPatches: 0,
     strategies: {
       import_type: createEmptyStrategyEvidence(),
+      type_runtime_split: createEmptyStrategyEvidence(),
       direct_import: createEmptyStrategyEvidence(),
+      public_seam_bypass: createEmptyStrategyEvidence(),
       extract_shared: createEmptyStrategyEvidence(),
       host_state_update: createEmptyStrategyEvidence(),
     },

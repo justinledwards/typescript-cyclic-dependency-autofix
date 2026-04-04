@@ -35,6 +35,12 @@ describe('classifyStrategyLabels', () => {
     ).toEqual(expect.arrayContaining(['public_seam_bypass', 'export_graph_rewrite']));
   });
 
+  it('adds type-runtime split labels when mixed imports are split into type and runtime forms', () => {
+    expect(
+      classifyStrategyLabels('Split type/runtime imports on app/index cycle', ['src/app.ts', 'src/index.ts']),
+    ).toEqual(expect.arrayContaining(['type_runtime_split', 'type_value_split']));
+  });
+
   it('adds ownership-localization labels for caller-owned settings cycle fixes', () => {
     expect(
       classifyStrategyLabels('fix(ui): break app chat settings cycle', [

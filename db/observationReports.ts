@@ -484,8 +484,14 @@ function classificationToStrategy(classification: string): string {
     case 'autofix_import_type': {
       return 'import_type';
     }
+    case 'autofix_type_runtime_split': {
+      return 'type_runtime_split';
+    }
     case 'autofix_direct_import': {
       return 'direct_import';
+    }
+    case 'autofix_public_seam_bypass': {
+      return 'public_seam_bypass';
     }
     case 'autofix_extract_shared': {
       return 'extract_shared';

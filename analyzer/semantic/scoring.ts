@@ -9,6 +9,7 @@ import type {
   PlanningStrategy,
   StrategyAttempt,
   StrategySignalValue,
+  TypeRuntimeSplitFixPlan,
 } from './types.js';
 
 export function scoreImportTypePlan(importPlans: ImportTypeFixPlan['imports']): {
@@ -27,6 +28,44 @@ export function scoreImportTypePlan(importPlans: ImportTypeFixPlan['imports']): 
     signals: {
       touchedFiles: touchedFiles.size,
       importEdges: importPlans.length,
+      introducesNewFile: false,
+      preservesSourceExports: true,
+    },
+  };
+}
+
+export function scoreTypeRuntimeSplitPlan(plan: TypeRuntimeSplitFixPlan): {
+  score: number;
+  breakdown: string[];
+  signals: Record<string, StrategySignalValue>;
+} {
+  const touchedFiles = new Set(plan.imports.map((entry) => entry.sourceFile));
+  const runtimeSymbolCount = plan.imports.reduce((count, entry) => count + entry.runtimeSymbols.length, 0);
+  const typeOnlySymbolCount = plan.imports.reduce((count, entry) => count + entry.typeOnlySymbols.length, 0);
+  const score = clampScore(
+    0.92 -
+      Math.max(0, touchedFiles.size - 1) * 0.02 +
+      Math.min(0.04, plan.splitDeclarations * 0.01) +
+      Math.min(0.03, runtimeSymbolCount * 0.005),
+  );
+  return {
+    score,
+    breakdown: [
+      'base 0.92 for splitting mixed type/runtime imports without introducing a new file',
+      touchedFiles.size > 1 ? `-0.02 for touching ${touchedFiles.size} files` : 'no penalty for single touched file',
+      plan.splitDeclarations > 0
+        ? `+${Math.min(0.04, plan.splitDeclarations * 0.01).toFixed(2)} for ${plan.splitDeclarations} split declaration(s)`
+        : 'no split bonus',
+      runtimeSymbolCount > 0
+        ? `+${Math.min(0.03, runtimeSymbolCount * 0.005).toFixed(2)} for ${runtimeSymbolCount} runtime symbol(s) rewritten to a direct import`
+        : 'no runtime rewrite bonus',
+    ],
+    signals: {
+      touchedFiles: touchedFiles.size,
+      importEdges: plan.imports.length,
+      splitDeclarations: plan.splitDeclarations,
+      runtimeSymbolCount,
+      typeOnlySymbolCount,
       introducesNewFile: false,
       preservesSourceExports: true,
     },
@@ -68,6 +107,40 @@ export function scoreDirectImportPlan(importPlans: DirectImportFixPlan['imports'
       preservesSourceExports: true,
       bypassesBarrel: true,
       bypassesPublicSeam: seamBypassCount > 0,
+    },
+  };
+}
+
+export function scorePublicSeamBypassPlan(importPlans: DirectImportFixPlan['imports']): {
+  score: number;
+  breakdown: string[];
+  signals: Record<string, StrategySignalValue>;
+} {
+  const directImportScore = scoreDirectImportPlan(importPlans);
+  const seamImports = importPlans.filter((plan) => {
+    const normalizedBarrel = plan.barrelFile.toLowerCase();
+    return (
+      normalizedBarrel.includes('/api.') ||
+      normalizedBarrel.startsWith('api.') ||
+      normalizedBarrel.includes('/plugin-sdk/') ||
+      normalizedBarrel.includes('/setup-surface.') ||
+      normalizedBarrel.startsWith('setup-surface.') ||
+      normalizedBarrel.includes('/setup-core.') ||
+      normalizedBarrel.startsWith('setup-core.')
+    );
+  }).length;
+
+  return {
+    score: clampScore(directImportScore.score + (seamImports > 0 ? 0.05 : 0)),
+    breakdown: [
+      ...directImportScore.breakdown,
+      seamImports > 0
+        ? `+0.05 for ${seamImports} public-seam import(s) bypassing an API or setup surface`
+        : 'no additional public-seam bonus',
+    ],
+    signals: {
+      ...directImportScore.signals,
+      publicSeamBypassImports: seamImports,
     },
   };
 }

@@ -126,11 +126,16 @@ describe('historical evidence loading', () => {
     expect(snapshot.totalReviewedPatches).toBe(2);
     expect(snapshot.totalValidatedPatches).toBe(2);
     expect(snapshot.strategies.direct_import).toMatchObject({
-      benchmarkMatches: 2,
-      patternMatches: 1,
-      profileMatches: 4,
+      benchmarkMatches: 1,
+      patternMatches: 0,
+      profileMatches: 2,
       approvedReviews: 1,
       passedValidations: 1,
+    });
+    expect(snapshot.strategies.public_seam_bypass).toMatchObject({
+      benchmarkMatches: 1,
+      patternMatches: 1,
+      profileMatches: 2,
     });
     expect(snapshot.strategies.import_type).toMatchObject({
       acceptedBenchmarks: 1,
